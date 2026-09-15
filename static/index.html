@@ -483,7 +483,10 @@ $('btn-analyze').onclick = async () => {
 
 $('btn-cut').onclick = async () => {
   if (!currentVideo) { alert('请先填写视频路径'); return; }
-  await saveSongs();
+  if (!(await saveSongs())) {
+    alert('清单保存失败，已中止剪切。请检查清单内容（歌名/时间格式）或磁盘空间后重试。');
+    return;
+  }
   log('开始剪切: ' + currentVideo);
   const r = await (await fetch('/api/cut', {
     method: 'POST', headers: {'Content-Type': 'application/json'},

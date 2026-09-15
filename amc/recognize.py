@@ -16,8 +16,11 @@ lrclib 的 /api/search 是精确子串匹配——实测 3 词短片段能命中
 """
 
 import difflib
+import os
 import re
 import subprocess
+import tempfile
+import threading
 from pathlib import Path
 
 import httpx
@@ -33,19 +36,26 @@ SEARCH_TOP_K = 5          # 每次查询取回的候选上限
 # ---- ASR：懒加载单例 ----
 
 _SENSEVOICE = None
+_SENSEVOICE_LOCK = threading.Lock()
 
 
 def ensure_asr():
-    """懒加载 SenseVoiceSmall 模型（单例，多段复用）。"""
+    """懒加载 SenseVoiceSmall 模型（单例，多段复用）。
+
+    双重检查加锁：/api/recognize 与 /api/recognize-all 可能并发进入，
+    无锁时两个线程都会各自 AutoModel(...) 一次，白白多占约 230MB 内存。
+    """
     global _SENSEVOICE
     if _SENSEVOICE is None:
-        from funasr import AutoModel  # 延迟导入，避免拖慢启动
-        _SENSEVOICE = AutoModel(
-            model=ASR_MODEL,
-            model_revision="master",
-            trust_remote_code=False,
-            disable_update=True,
-        )
+        with _SENSEVOICE_LOCK:
+            if _SENSEVOICE is None:
+                from funasr import AutoModel  # 延迟导入，避免拖慢启动
+                _SENSEVOICE = AutoModel(
+                    model=ASR_MODEL,
+                    model_revision="master",
+                    trust_remote_code=False,
+                    disable_update=True,
+                )
     return _SENSEVOICE
 
 
@@ -119,10 +129,18 @@ def search_lyrics(query, top_k=SEARCH_TOP_K):
     return out
 
 
+_KEEP_CHARS_RE = re.compile(r"[^A-Za-z一-鿿぀-ヿ가-힣0-9]+")
+
+
 def _text_sim(a, b):
-    """文本相似度 0~1（SequenceMatcher，忽略大小写与标点）。"""
+    """文本相似度 0~1（SequenceMatcher，忽略大小写与标点）。
+
+    保留范围必须与 build_queries 一致（中日韩 + 拉丁 + 数字）：此前只留
+    CJK 汉字与拉丁字母，日文假名、韩文谚文被整体清空，导致日韩歌曲的
+    相似度恒为 0，识别结果全被 MIN_SIM 过滤掉。
+    """
     def compact(s):
-        return re.sub(r"[^A-Za-z一-鿿0-9]+", "", s).lower()
+        return _KEEP_CHARS_RE.sub("", s).lower()
     a, b = compact(a), compact(b)
     if not a or not b:
         return 0.0
@@ -150,13 +168,23 @@ def segment_wav(video, start, end, out_wav):
     return out_wav
 
 
-def recognize_segment(video, start, end, lang="zh"):
+def recognize_segment(video, start, end, lang="zh", work_dir=None):
     """识别单个 [start, end) 秒段的歌名。
 
     返回 {"transcript", "query", "candidates": [{title, artist, sim, confidence}]}
     candidates 按相似度降序，可能为空。
+
+    work_dir: 临时 wav 的存放目录，默认用系统临时目录。此前写在**源视频
+    所在目录**，只读目录/网络盘会失败，且同一时间段的并发识别会撞名。
     """
-    tmp_wav = Path(video).parent / f".amc_seg_{int(start)}-{int(end)}.wav"
+    Path(video)
+    if work_dir:
+        Path(work_dir).mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=".amc_seg_", suffix=".wav",
+        dir=str(work_dir) if work_dir else None)
+    os.close(fd)
+    tmp_wav = Path(tmp_name)
     try:
         segment_wav(video, start, end, tmp_wav)
         text = transcribe(tmp_wav, lang=lang)

@@ -5,14 +5,16 @@
   speech / singing / music 三类概率，直接区分唱歌、杂谈、音乐；
 - 对 singing 概率做滑窗聚合（默认 20s 窗 / 10s 步 / 0.5 阈值），
   相邻唱歌窗间隔 30s 以内合并，得到完整歌曲的候选区间；
-- 参数用真实录播 + 人工时间戳标定（13 首真值全部命中、覆盖 88%）。
+- 参数用真实录播 + 人工时间戳标定（13 首真值全部命中、覆盖唱歌时长 84.6%，
+  候选区间精度 83.1%；加上 win_frac_min 判别项前覆盖率为 88%）。
 
 旧版 demucs+pyin 特征管线已由 FireRedVAD 取代（见 git 历史）。
 """
 
 import hashlib
+import shutil
 import subprocess
-import sys
+import threading
 from pathlib import Path
 
 import numpy as np
@@ -27,6 +29,37 @@ WIN_FRAC_MIN = 0.08       # 窗内 singing 压过 speech 与 music 的帧占比�
 MERGE_GAP = 30.0          # 相邻唱歌窗间隔小于该值（秒）时合并
 DEFAULT_MODEL_DIR = "pretrained_models/FireRedVAD/AED"
 HF_REPO = "FireRedTeam/FireRedVAD"
+
+_FFMPEG_HINT = (
+    "未找到 {tool}。请安装 ffmpeg 并把 ffmpeg/ffprobe 加入 PATH：\n"
+    "  Windows: winget install Gyan.FFmpeg  或到 https://ffmpeg.org/download.html 下载后配置 PATH\n"
+    "  macOS:   brew install ffmpeg\n"
+    "  Linux:   sudo apt install ffmpeg"
+)
+
+
+def ensure_ffmpeg(tools=("ffmpeg", "ffprobe")):
+    """预检外部依赖，缺失时给出可操作的提示而不是裸 FileNotFoundError。"""
+    missing = [t for t in tools if shutil.which(t) is None]
+    if missing:
+        raise RuntimeError(_FFMPEG_HINT.format(tool="/".join(missing)))
+
+
+def run_cmd(cmd, progress_cb=None):
+    """执行外部命令；失败时把 stderr 末尾几行拼进异常，避免只看到 exit status 1。
+
+    ffmpeg/ffprobe 默认 capture_output 会吞掉 stderr，用户遇到"编码不支持/磁盘满/
+    文件损坏"时完全无从定位，这里把真正的原因暴露出来。
+    """
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=False,
+                          encoding="utf-8", errors="replace")
+    if proc.returncode != 0:
+        tail = "\n".join((proc.stderr or "").strip().splitlines()[-8:])
+        raise RuntimeError(
+            f"命令失败（退出码 {proc.returncode}）: {' '.join(map(str, cmd[:3]))} ...\n"
+            f"--- stderr 末尾 ---\n{tail or '(无输出)'}"
+        )
+    return proc
 
 
 def ensure_model(model_dir=DEFAULT_MODEL_DIR):
@@ -62,15 +95,37 @@ def ffmpeg_extract_audio(video, out_wav, sr=16000, progress_cb=None):
             progress_cb(msg)
 
     log(f"[1/2] 抽取音轨: {video}")
+    ensure_ffmpeg()
     cmd = [
         "ffmpeg", "-y", "-i", str(video),
         "-vn", "-map", "0:a:0",
         "-ac", "1", "-ar", str(sr),
         "-f", "wav", str(out_wav),
     ]
-    subprocess.run(cmd, check=True, capture_output=True, text=True,
-                   encoding="utf-8", errors="replace")
+    run_cmd(cmd)
     log(f"      完成: {out_wav}")
+
+
+_AED_CACHE = {}
+_AED_LOCK = threading.Lock()
+
+
+def load_aed(model_dir, use_gpu):
+    """按 (model_dir, device) 缓存 AED 实例。
+
+    此前 detect() 每次都 from_pretrained 重新加载，Web 上连续分析多个视频
+    要反复付加载开销；缓存后同一进程内只加载一次。
+    """
+    from fireredvad import FireRedAed, FireRedAedConfig
+
+    key = (str(Path(model_dir).resolve()), bool(use_gpu))
+    if key not in _AED_CACHE:
+        with _AED_LOCK:
+            if key not in _AED_CACHE:
+                _AED_CACHE[key] = FireRedAed.from_pretrained(
+                    str(ensure_model(model_dir)),
+                    FireRedAedConfig(use_gpu=use_gpu))
+    return _AED_CACHE[key]
 
 
 def singing_probs(wav_path, model_dir, use_gpu, progress_cb=None):
@@ -78,16 +133,13 @@ def singing_probs(wav_path, model_dir, use_gpu, progress_cb=None):
 
     概率列顺序为 speech / singing / music。
     """
-    from fireredvad import FireRedAed, FireRedAedConfig
-
     def log(msg):
         print(msg, flush=True)
         if progress_cb:
             progress_cb(msg)
 
     log(f"[2/2] FireRedVAD 歌声检测 ({'cuda' if use_gpu else 'cpu'})...")
-    aed = FireRedAed.from_pretrained(
-        str(ensure_model(model_dir)), FireRedAedConfig(use_gpu=use_gpu))
+    aed = load_aed(model_dir, use_gpu)
     result, probs = aed.detect(str(wav_path))
     probs = probs.numpy()
     log(f"      完成，音频 {result['dur']:.0f}s")

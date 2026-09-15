@@ -18,6 +18,7 @@ API 一览:
   GET  /api/open?path=xxx         在资源管理器中打开路径
 """
 
+import hashlib
 import os
 import re
 import threading
@@ -26,13 +27,17 @@ import uuid
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from amc.cut import cut as do_cut
 from amc.cut import parse_songlist, sanitize_filename
 from amc.detect import (
-    DEFAULT_MODEL_DIR, MERGE_GAP, WIN_FRAC_MIN, WIN_SEC, WIN_THRESH, detect,
+    MERGE_GAP,
+    WIN_FRAC_MIN,
+    WIN_SEC,
+    WIN_THRESH,
+    detect,
 )
 from amc.recognize import recognize_segment
 from amc.timefmt import format_time, parse_time
@@ -47,14 +52,36 @@ app.mount("/static", StaticFiles(directory=ROOT / "static"), name="static")
 # ---- 任务表: task_id -> {status, message, result, error} ----
 TASKS = {}
 TASKS_LOCK = threading.Lock()
+TASK_TTL_SEC = 3600        # 已完成任务保留时长
+TASK_KEEP_MAX = 50         # 已完成任务最多保留条数
+_MAX_MESSAGES = 500        # 单任务日志条数上限（长录播逐段剪切会刷很多行）
 
 
 def _new_task():
     task_id = uuid.uuid4().hex[:12]
     with TASKS_LOCK:
+        _gc_tasks_locked()
         TASKS[task_id] = {"status": "running", "messages": [], "result": None,
                           "error": None, "started": time.time()}
     return task_id
+
+
+def _gc_tasks_locked():
+    """回收已完成任务，避免 TASKS 只增不减导致长跑进程内存持续增长。
+
+    调用方需已持有 TASKS_LOCK。规则：先按 TTL 清，超量再按启动时间淘汰最旧的
+    已完成任务；运行中的任务永不回收。
+    """
+    now = time.time()
+    finished = [tid for tid, t in TASKS.items() if t["status"] != "running"]
+    for tid in finished:
+        if now - TASKS[tid]["started"] > TASK_TTL_SEC:
+            TASKS.pop(tid, None)
+    finished = [tid for tid, t in TASKS.items() if t["status"] != "running"]
+    if len(finished) > TASK_KEEP_MAX:
+        finished.sort(key=lambda tid: TASKS[tid]["started"])
+        for tid in finished[:len(finished) - TASK_KEEP_MAX]:
+            TASKS.pop(tid, None)
 
 
 def _run_task(task_id, fn):
@@ -75,7 +102,13 @@ def _task_progress(task_id):
     """返回一个把日志写入任务的回调。"""
     def cb(msg):
         with TASKS_LOCK:
-            TASKS[task_id]["messages"].append(msg)
+            t = TASKS.get(task_id)
+            if t is None:          # 已被 GC 回收
+                return
+            msgs = t["messages"]
+            msgs.append(msg)
+            if len(msgs) > _MAX_MESSAGES:
+                del msgs[:len(msgs) - _MAX_MESSAGES]
     return cb
 
 
@@ -84,9 +117,19 @@ CURRENT_VIDEO_REQ = None            # 前端最近一次「选视频/分析」�
 
 
 def _session_dir(video):
-    """当前视频的会话目录根：work/<视频名>/（temp 与 result 在下面）。"""
-    stem = sanitize_filename(Path(video).stem) or "video"
-    return ROOT / "work" / stem
+    """当前视频的会话目录根：work/<视频名>_<路径哈希>/（temp 与 result 在下面）。
+
+    目录名带绝对路径短哈希：不同目录下的同名视频（如 2024/录播.mp4 与
+    2025/录播.mp4）此前会共用同一个 work/录播/，候选清单与剪切结果互相覆盖。
+    """
+    p = Path(video)
+    stem = sanitize_filename(p.stem) or "video"
+    try:
+        key = str(p.resolve()).lower()
+    except OSError:
+        key = str(p).lower()
+    digest = hashlib.sha1(key.encode("utf-8")).hexdigest()[:8]
+    return ROOT / "work" / f"{stem}_{digest}"
 
 
 def _session_paths(video):
@@ -103,7 +146,6 @@ def _session_paths(video):
         "temp": temp, "result": result,
         "candidates": temp / "candidates.txt",
         "songs": temp / "songs.txt",
-        "audio": temp / "audio16k.wav",
     }
 
 
@@ -214,11 +256,14 @@ CAND_RE = re.compile(
     r"\s*[\d:]+\s*\|\s*(\S+)\s*\|\s*([\d.]+)")
 
 
-@app.get("/api/candidates")
-def api_candidates(video: str = Query(default="")):
-    path = _current_candidates_path(video)
+def _parse_candidates_file(path):
+    """解析 candidates.txt → 候选段列表（api_candidates 与识别共用）。
+
+    此前同一套 CAND_RE 解析逻辑在 api_candidates 与 _load_candidates_payload
+    里各写了一遍，字段改动时容易漏改其中一处。
+    """
     if not path.exists():
-        return {"exists": False, "candidates": []}
+        return []
     cands = []
     for line in path.read_text(encoding="utf-8").splitlines():
         m = CAND_RE.match(line)
@@ -232,7 +277,13 @@ def api_candidates(video: str = Query(default="")):
                 "confidence": m.group(4),
                 "score": float(m.group(5)),
             })
-    return {"exists": True, "candidates": cands}
+    return cands
+
+
+@app.get("/api/candidates")
+def api_candidates(video: str = Query(default="")):
+    path = _current_candidates_path(video)
+    return {"exists": path.exists(), "candidates": _parse_candidates_file(path)}
 
 
 @app.post("/api/candidates/add")
@@ -303,10 +354,12 @@ def api_recognize(payload: dict):
     task_id = _new_task()
     log = _task_progress(task_id)
     lang = payload.get("lang", "zh")
+    sess = _session_paths(video)
 
     def run():
         log(f"正在识别 {payload.get('name', '')} ({format_time(start)} ~ {format_time(end)})...")
-        return recognize_segment(video, start, end, lang=lang)
+        return recognize_segment(video, start, end, lang=lang,
+                                 work_dir=str(sess["temp"]))
 
     _run_task(task_id, run)
     return {"task_id": task_id}
@@ -329,13 +382,15 @@ def api_recognize_all(payload: dict):
     task_id = _new_task()
     log = _task_progress(task_id)
     lang = payload.get("lang", "zh")
+    sess = _session_paths(video)
 
     def run():
         results = []
         for i, c in enumerate(cands, 1):
             log(f"[{i}/{len(cands)}] 识别 {c['start_str']} ~ {c['end_str']}...")
             start, end = c["start"], c["end"]
-            res = recognize_segment(video, start, end, lang=lang)
+            res = recognize_segment(video, start, end, lang=lang,
+                                    work_dir=str(sess["temp"]))
             results.append({"index": c["index"], "start": start,
                             "start_str": c["start_str"], "end": end,
                             "end_str": c["end_str"], **res})
@@ -346,19 +401,11 @@ def api_recognize_all(payload: dict):
 
 
 def _load_candidates_payload(video_arg=""):
-    """从 candidates.txt 读取候选段（供识别复用）。"""
+    """从 candidates.txt 读取候选段（供识别复用，只取定位所需字段）。"""
     path = _current_candidates_path(video_arg)
-    if not path.exists():
-        return []
-    cands = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        m = CAND_RE.match(line)
-        if m:
-            s, e = parse_time(m.group(2)), parse_time(m.group(3))
-            cands.append({"index": int(m.group(1)),
-                          "start": s, "end": e,
-                          "start_str": format_time(s), "end_str": format_time(e)})
-    return cands
+    return [{"index": c["index"], "start": c["start"], "end": c["end"],
+             "start_str": c["start_str"], "end_str": c["end_str"]}
+            for c in _parse_candidates_file(path)]
 
 
 # ---- 剪切 ----
@@ -381,7 +428,9 @@ def api_cut(payload: dict):
         pad = payload.get("pad", 1.5)
         min_duration = payload.get("min_duration", 0.0)
         report = do_cut(video=video, songlist_path=sess["songs"],
-                        out_dir=out_dir, pad=pad, min_duration=min_duration)
+                        out_dir=out_dir, pad=pad, min_duration=min_duration,
+                        overwrite=bool(payload.get("overwrite", False)),
+                        progress_cb=log)
         return {
             "out_dir": out_dir,
             "items": [{
@@ -389,7 +438,8 @@ def api_cut(payload: dict):
                 "file": r["out"].name,
                 "path": str(r["out"]),
                 "actual": r["actual"],
-                "actual_str": format_time(r["actual"]),
+                "actual_str": format_time(r["actual"]) if r["actual"] is not None else "",
+                "skipped": r.get("skipped", False),
             } for r in report],
         }
 
@@ -460,11 +510,31 @@ def api_stream(path: str = Query(...)):
 
 @app.get("/api/open")
 def api_open(path: str = Query(...)):
-    """在资源管理器中打开路径（Windows）。"""
-    if os.name == "nt":
-        os.startfile(str(Path(path)))  # noqa: S606
-        return {"ok": True}
-    return {"ok": False, "message": "仅 Windows 支持"}
+    """在资源管理器中打开路径（Windows）。
+
+    安全约束：只允许打开本项目 work/ 会话目录及其子目录。此接口是 GET 且会
+    触发本机程序，若不加限制，任意网页都能用 <img src="http://localhost:8765/
+    api/open?path=C:\\Windows\\System32\\calc.exe"> 静默拉起本机程序。
+    """
+    if os.name != "nt":
+        return {"ok": False, "message": "仅 Windows 支持"}
+    target = Path(path)
+    if not _is_within_work(target):
+        raise HTTPException(403, "仅允许打开本工具 work/ 目录下的路径")
+    if not target.exists():
+        raise HTTPException(404, f"路径不存在: {target}")
+    os.startfile(str(target))
+    return {"ok": True}
+
+
+def _is_within_work(target):
+    """判断路径是否位于 work/ 会话目录内（解析符号链接后再比前缀）。"""
+    try:
+        t = Path(target).resolve()
+        base = (ROOT / "work").resolve()
+    except OSError:
+        return False
+    return t == base or base in t.parents
 
 
 @app.get("/")

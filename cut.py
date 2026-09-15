@@ -33,10 +33,13 @@ def main():
                    help="起止边界外扩秒数（默认 1.5，配合无损剪切关键帧对齐）")
     p.add_argument("--min-duration", type=float, default=0.0,
                    help="最小时长秒数，短于此值的条目跳过（如 180 只剪 3 分钟以上的）")
+    p.add_argument("--overwrite", action="store_true",
+                   help="输出文件已存在时覆盖（默认跳过已存在的文件）")
     args = p.parse_args()
 
     cut(video=args.video, songlist_path=args.songlist,
-        out_dir=args.out_dir, pad=args.pad, min_duration=args.min_duration)
+        out_dir=args.out_dir, pad=args.pad, min_duration=args.min_duration,
+        overwrite=args.overwrite)
 
 
 if __name__ == "__main__":

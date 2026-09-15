@@ -11,8 +11,13 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
 
-from amc.detect import (  # noqa: E402
-    DEFAULT_MODEL_DIR, MERGE_GAP, WIN_FRAC_MIN, WIN_SEC, WIN_THRESH, detect,
+from amc.detect import (
+    DEFAULT_MODEL_DIR,
+    MERGE_GAP,
+    WIN_FRAC_MIN,
+    WIN_SEC,
+    WIN_THRESH,
+    detect,
 )
 
 
