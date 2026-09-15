@@ -7,8 +7,7 @@
   相邻唱歌窗间隔 30s 以内合并，得到完整歌曲的候选区间；
 - 参数用真实录播 + 人工时间戳标定（13 首真值全部命中、覆盖 88%）。
 
-旧版 demucs+pyin 特征管线已由 FireRedVAD 取代（见 git 历史与
-docs/model-plan.md 中的标定分析）。
+旧版 demucs+pyin 特征管线已由 FireRedVAD 取代（见 git 历史）。
 """
 
 import hashlib
@@ -24,6 +23,7 @@ from .timefmt import format_time
 WIN_SEC = 20.0            # 滑窗长度（秒）
 WIN_HOP_SEC = 10.0        # 滑窗步长（秒）
 WIN_THRESH = 0.5          # 窗内 singing 平均概率阈值
+WIN_FRAC_MIN = 0.08       # 窗内 singing 压过 speech 与 music 的帧占比下限
 MERGE_GAP = 30.0          # 相邻唱歌窗间隔小于该值（秒）时合并
 DEFAULT_MODEL_DIR = "pretrained_models/FireRedVAD/AED"
 HF_REPO = "FireRedTeam/FireRedVAD"
@@ -74,7 +74,10 @@ def ffmpeg_extract_audio(video, out_wav, sr=16000, progress_cb=None):
 
 
 def singing_probs(wav_path, model_dir, use_gpu, progress_cb=None):
-    """跑 AED，返回 (singing 帧概率, 时长秒)。帧移 10ms。"""
+    """跑 AED，返回 (帧级概率 [N,3], 时长秒)。帧移 10ms。
+
+    概率列顺序为 speech / singing / music。
+    """
     from fireredvad import FireRedAed, FireRedAedConfig
 
     def log(msg):
@@ -88,25 +91,40 @@ def singing_probs(wav_path, model_dir, use_gpu, progress_cb=None):
     result, probs = aed.detect(str(wav_path))
     probs = probs.numpy()
     log(f"      完成，音频 {result['dur']:.0f}s")
-    return probs[:, 1], result["dur"]
+    return probs, result["dur"]
 
 
-def window_candidates(singing_p, win_sec=WIN_SEC, hop_sec=WIN_HOP_SEC,
-                      thresh=WIN_THRESH, merge_gap=MERGE_GAP, min_duration=15.0):
+def window_candidates(singing_p, speech_p=None, music_p=None,
+                      win_sec=WIN_SEC, hop_sec=WIN_HOP_SEC, thresh=WIN_THRESH,
+                      win_frac_min=WIN_FRAC_MIN, merge_gap=MERGE_GAP,
+                      min_duration=15.0):
     """滑窗聚合 singing 概率 → 候选段列表 [{"start","end","score"}]。
 
-    singing_p 为帧级概率（帧移 10ms），返回秒单位的候选区间。
+    帧级概率帧移 10ms，返回秒单位的候选区间。
+
+    判别项 win_frac_min：杂谈配 BGM 时，BGM 的旋律会让 singing 概率也很高，
+    但模型始终认为 music 才是主类；真唱时人声突出，singing 会压过 speech 与
+    music。实测（2 小时录播 + 13 首真值视频）要求"唱赢"帧占比不低于 0.08，
+    可在不损失召回的前提下剔除大部分误报。传 0 关闭该判别项。
     """
     frame_hop = 0.01
     n = len(singing_p)
     win_f = int(win_sec / frame_hop)
     hop_f = max(1, int(hop_sec / frame_hop))
+    use_frac = win_frac_min > 0 and speech_p is not None and music_p is not None
 
     clusters = []  # [start_sec, end_sec, [窗得分]]
     for start in range(0, n - win_f + 1, hop_f):
-        score = float(singing_p[start:start + win_f].mean())
+        sl = slice(start, start + win_f)
+        w_singing = singing_p[sl]
+        score = float(w_singing.mean())
         if score < thresh:
             continue
+        if use_frac:
+            win_frac = float(((w_singing >= speech_p[sl]) &
+                              (w_singing >= music_p[sl])).mean())
+            if win_frac < win_frac_min:
+                continue
         t = start * frame_hop
         if clusters and t - clusters[-1][1] <= merge_gap:
             clusters[-1][1] = t + win_sec
@@ -138,7 +156,7 @@ def confidence_of(score):
 def detect(video, work_dir="work", candidates_path="candidates.txt",
            model_dir=DEFAULT_MODEL_DIR, device="cpu", min_duration=15.0,
            win_sec=WIN_SEC, win_thresh=WIN_THRESH, merge_gap=MERGE_GAP,
-           progress_cb=None):
+           win_frac_min=WIN_FRAC_MIN, progress_cb=None):
     """检测主流程：产出候选清单文件，返回候选列表。
 
     progress_cb: 可选的进度回调，参数为日志字符串（供 Web 轮询展示）。
@@ -162,10 +180,11 @@ def detect(video, work_dir="work", candidates_path="candidates.txt",
         if not torch.cuda.is_available():
             log("警告: CUDA 不可用，回退到 CPU")
             use_gpu = False
-    singing_p, dur = singing_probs(audio_wav, model_dir, use_gpu,
-                                   progress_cb=progress_cb)
+    probs, dur = singing_probs(audio_wav, model_dir, use_gpu,
+                               progress_cb=progress_cb)
     candidates = window_candidates(
-        singing_p, win_sec=win_sec, thresh=win_thresh,
+        probs[:, 1], speech_p=probs[:, 0], music_p=probs[:, 2],
+        win_sec=win_sec, thresh=win_thresh, win_frac_min=win_frac_min,
         merge_gap=merge_gap, min_duration=min_duration)
     for c in candidates:
         c["confidence"] = confidence_of(c["score"])

@@ -12,7 +12,7 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
     sys.stderr.reconfigure(encoding="utf-8")
 
 from amc.detect import (  # noqa: E402
-    DEFAULT_MODEL_DIR, MERGE_GAP, WIN_SEC, WIN_THRESH, detect,
+    DEFAULT_MODEL_DIR, MERGE_GAP, WIN_FRAC_MIN, WIN_SEC, WIN_THRESH, detect,
 )
 
 
@@ -33,6 +33,10 @@ def main():
                    help=f"窗内 singing 平均概率阈值（默认 {WIN_THRESH}）")
     p.add_argument("--merge-gap", type=float, default=MERGE_GAP,
                    help=f"相邻唱歌窗合并间隔，秒（默认 {MERGE_GAP}）")
+    p.add_argument("--win-frac-min", type=float, default=WIN_FRAC_MIN,
+                   help=f"窗内 singing 压过 speech 与 music 的帧占比下限，"
+                        f"用于剔除带 BGM 杂谈的误报（默认 {WIN_FRAC_MIN}，"
+                        f"填 0 关闭）")
     args = p.parse_args()
 
     detect(
@@ -45,6 +49,7 @@ def main():
         win_sec=args.win_sec,
         win_thresh=args.win_thresh,
         merge_gap=args.merge_gap,
+        win_frac_min=args.win_frac_min,
     )
 
 

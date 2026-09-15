@@ -4,28 +4,28 @@
 
 检测基于 [FireRedVAD](https://github.com/FireRedTeam/FireRedVAD) 的 AED
 （Audio Event Detection）模型，逐帧区分 speech / singing / music，直接
-解决"带 BGM 杂谈 vs 唱歌"的判别问题。对 singing 概率做滑窗聚合得到候选
-唱歌区间，人工确认歌名与起止时间后批量剪切。
+解决"带 BGM 杂谈 vs 唱歌"的判别问题。对 singing 概率滑窗聚合得到候选区间，
+人工确认歌名与起止时间后批量剪切，可选调用 ASR + 歌词库推荐歌名。
 
 ## 工作流程
 
 ```
-① analyze    自动检测候选唱歌区间 → candidates.txt（时间+置信度）
-② 人工       对照原视频试听，整理最终清单 → songs.txt（歌曲名、开始、结束）
-③ cut        按清单批量无损剪切 → output/01_歌曲名.mp4 ...
+① 分析    自动检测候选唱歌区间 → work/<视频名>/temp/candidates.txt
+② 人工    对照原视频试听，整理最终清单 → work/<视频名>/temp/songs.txt
+③ 剪切    按清单批量无损剪切 → work/<视频名>/result/01_歌曲名.mp4
 ```
 
 - **候选清单只用于辅助定位**，最终以 `songs.txt` 为准；检测漏掉的唱歌段
   照样可以写进 `songs.txt` 剪切。
-- 剪切使用 `ffmpeg -c copy` 无损流复制，不重编码、速度快；关键帧对齐带来
-  的 ±1~2 秒误差由边界外扩（默认 1.5s）补偿，保证不丢内容。
+- 剪切用 `ffmpeg -c copy` 无损流复制，不重编码；关键帧对齐的 ±1~2 秒误差
+  由边界外扩（默认 1.5s）补偿。
 
 ## 环境要求
 
-- Windows / Linux / macOS
-- Python 3.10+
-- [ffmpeg](https://ffmpeg.org/)（需在 PATH 中）
-- 首次运行自动从 Hugging Face 下载 AED 模型（约 9MB）
+- Windows / Linux / macOS，Python 3.10+
+- [ffmpeg](https://ffmpeg.org/)（`ffmpeg` 与 `ffprobe` 需在 PATH 中）
+- 首次运行自动下载 AED 模型（约 9MB）；歌名识别另需下载 SenseVoiceSmall
+  转写模型（约 230MB）并联网
 
 ## 安装
 
@@ -33,44 +33,52 @@
 git clone https://github.com/yagumi0411/AutoMusicCut.git
 cd AutoMusicCut
 python -m venv .venv
+# Windows: .venv\Scripts\activate      Linux/macOS: source .venv/bin/activate
 
-# Windows:
-.venv\Scripts\activate
-# Linux/macOS:
-source .venv/bin/activate
-
-# 有 NVIDIA GPU（CUDA 12.8，可选，AED 在 CPU 上已约 500 倍实时）：
+# 有 NVIDIA GPU 可选（AED 在 CPU 上已约 500 倍实时）：
 pip install torch --index-url https://download.pytorch.org/whl/cu128
-# 无 GPU：
-pip install torch
+# 无 GPU：pip install torch
 
 pip install -r requirements.txt
 ```
+
+依赖：`fireredvad`、`funasr`、`fastapi` + `uvicorn`、`httpx`、`numpy`、
+`soundfile`、`huggingface_hub`。
 
 ## 用法
 
 ### Web 界面（推荐）
 
 ```bash
-# 双击 start.bat，或手动启动：
+# 双击 start.bat，或手动启动（--port 指定端口，--no-browser 不开浏览器）：
 .venv\Scripts\python.exe app.py
 ```
 
-浏览器自动打开 http://localhost:8765 ，在页面里完成全部流程：
+浏览器打开 http://localhost:8765 ，在页面里完成全部流程：
 
-- **选择视频**：点击"浏览"在目录浏览器中选中录播文件（或直接填路径）；
-- **分析**：点击后自动检测，候选唱歌段以表格展示（置信度着色）；
-- **试听**：勾选"内嵌播放器"，点击候选行视频直接跳到该时间点；
-- **整理清单**：点"＋加入清单"把候选行加入 songs.txt，也可手动增删行、
-  修改歌名与起止时间；
-- **识别歌名**（可选）：点候选行"识别"或"全部识别"，自动转写歌词并在
-  本地搜索歌名，弹窗给出 Top-N 候选（含歌手与置信度），点选即填入
-  songs.txt；首次使用会自动下载 SenseVoiceSmall 转写模型（约 230MB），
-  需要联网查询歌词数据库；
-- **剪切**：点击后按清单批量无损剪切，完成后可一键打开输出目录。
+1. **选视频**：点「浏览」选文件、直接拖文件进页面，或手动填路径（记在浏览器
+   本地，刷新后自动恢复）；
+2. **分析**：后台执行，右下角可拖动日志面板实时显示进度；候选段以表格展示
+   （置信度着色 + 窗平均概率）。检测固定用 CPU，需要 GPU 时走命令行；
+3. **试听**：勾选「内嵌播放器」后，点候选行的**开始/结束单元格**分别跳到该
+   时间点；播放器带 ±1/5/10 秒微调与 0.5×~2× 倍速，便于对齐歌曲起止；
+4. **整理清单**：点「＋清单」加入 songs.txt（歌名默认 `歌曲N`，可直接编辑），
+   也可手动增删行、改时间；删除与追加会立即落盘；
+5. **识别歌名**（可选）：点候选行「识别」或「全部识别」，自动转写歌词并在
+   lrclib 歌词库检索，弹窗给出候选（歌手 + 相似度），点选即填入清单；
+6. **剪切**：按清单批量无损剪切到 `work/<视频名>/result/`，完成后可一键打开
+   输出目录。
 
-> 内嵌播放器依赖浏览器对视频编码的支持：mp4(H.264) 可直接播放；
-> flv/mkv 等格式浏览器不支持，仍可用外部播放器对照清单试听。
+每个视频一个独立会话目录，切换视频互不覆盖：
+
+```
+work/<视频名>/
+├── temp/    candidates.txt、songs.txt、audio_<哈希>.wav（16k 音轨缓存，可复用）
+└── result/  01_歌曲名.mp4、02_歌曲名.mp4 …
+```
+
+> 内嵌播放器只支持浏览器可解码的容器（mp4/m4v 等）；flv/mkv/ts 请用外部
+> 播放器对照清单试听。「打开输出目录」为 Windows 专属。
 
 ### 命令行
 
@@ -78,13 +86,15 @@ pip install -r requirements.txt
 
 ```bash
 python analyze.py data/录播.mp4
-# 可选参数：
 #   --work-dir work/       中间产物目录（16k 音轨缓存，可复用）
 #   --candidates candidates.txt
+#   --model-dir pretrained_models/FireRedVAD/AED   模型目录，缺失时自动下载
 #   --device cuda|cpu      推理设备（默认 cpu，模型很小、约 500 倍实时）
 #   --min-duration 15      候选段最小长度（秒）
 #   --win-sec 20           滑窗长度（秒）
 #   --win-thresh 0.5       窗内 singing 平均概率阈值，漏检多就调低
+#   --win-frac-min 0.08    窗内 singing 压过 speech 与 music 的帧占比下限，
+#                          误报多就调大，漏检多就调小或填 0 关闭
 #   --merge-gap 30         相邻唱歌窗合并间隔（秒），候选太碎就调大
 ```
 
@@ -92,7 +102,8 @@ python analyze.py data/录播.mp4
 
 ```
 # AutoMusicCut 候选清单（仅供参考，最终以人工清单 songs.txt 为准）
-# 格式: 序号 | 开始 | 结束 | 时长 | 置信度 | 得分
+# 视频: 录播.mp4（时长 03:41:20）
+# 格式: 序号 | 开始 | 结束 | 时长 | 置信度 | 概率
   1 | 00:03:10 | 00:06:45 | 03:35 | 高 | 0.82
   2 | 00:58:41 | 01:03:09 | 04:28 | 高 | 0.78
   3 | 01:09:26 | 01:13:40 | 04:14 | 中 | 0.61
@@ -100,8 +111,8 @@ python analyze.py data/录播.mp4
 
 #### 2. 人工筛选
 
-对照原视频试听候选段，整理最终清单 `songs.txt`（条目间空行分隔，
-每条目 3 行：歌曲名、开始、结束；`#` 开头为注释行）：
+对照原视频试听候选段，整理最终清单 `songs.txt`（条目间空行分隔，每条目 3 行：
+歌曲名、开始、结束；`#` 开头为注释行）：
 
 ```
 冬眠
@@ -113,39 +124,60 @@ python analyze.py data/录播.mp4
 01:13:40
 ```
 
-时间支持 `HHMMSS`（如 `005841`）或 `HH:MM:SS`（如 `00:58:41`）两种写法。
+时间支持 `HHMMSS`（`005841`）、`HH:MM:SS`（`00:58:41`）、`MM:SS`（`58:41`）。
 
 #### 3. 批量剪切
 
 ```bash
 python cut.py data/录播.mp4 songs.txt
-# 可选参数：
 #   --out-dir output/     输出目录
 #   --pad 1.5             起止边界外扩秒数
-#   --min-duration 180    最小时长过滤（秒），短于该值的条目跳过
+#   --min-duration 180    最小时长过滤（秒），短于该值的条目跳过，
 #                         例如 180 表示只剪 3 分钟以上的完整曲目
 ```
 
-输出 `output/01_冬眠.mp4`、`output/02_旅行的意义.mp4`……并打印每段的
-实际切出时长。
+输出 `output/01_冬眠.mp4`、`output/02_旅行的意义.mp4`……并打印每段实际切出时长。
 
 ## 检测原理
 
-1. **抽音轨**：ffmpeg 抽取 16kHz 单声道音轨；
-2. **事件检测**：FireRedVAD 的 AED 模型（DFSMN 架构，约 588K 参数，
-   支持 100+ 语言）逐帧（10ms）输出 speech / singing / music 三类概率，
-   直接区分唱歌、杂谈与音乐；
-3. **滑窗聚合**：对 singing 概率做滑窗（默认 20s 窗 / 10s 步）取均值，
-   超过阈值（0.5）的窗视为唱歌窗，间隔 30s 以内的相邻窗合并成候选区间，
-   输出候选清单。
+1. **抽音轨**：ffmpeg 抽取 16kHz 单声道音轨（按视频名+文件大小哈希缓存，重复
+   分析直接复用）；
+2. **事件检测**：FireRedVAD AED 模型（DFSMN，约 588K 参数，支持 100+ 语言）
+   逐帧（10ms）输出 speech / singing / music 三类概率；
+3. **滑窗聚合**：对 singing 概率滑窗（默认 20s 窗 / 10s 步）取均值，超过阈值
+   （0.5）的窗视为唱歌窗，间隔 30s 以内的相邻窗合并成候选区间；
+4. **剔除带 BGM 杂谈的误报**：杂谈配 BGM 时 BGM 旋律会让 singing 概率同样偏高，
+   但此时模型始终认为 music 才是主类；真唱时人声突出，singing 会压过 speech 与
+   music。因此要求窗内"singing 同时不小于 speech 与 music"的帧占比不低于
+   `--win-frac-min`（默认 0.08）。
 
-默认参数用真实录播与人工时间戳标定：13 首真值歌曲全部命中、
-覆盖唱歌时长的 88%。不同主播/混音风格下可微调 `--win-thresh` 与
-`--merge-gap`。
+默认参数用真实录播与人工时间戳标定：13 首真值歌曲全部命中、覆盖唱歌时长的
+84.6%，候选区间精度 83.1%；在 2 小时杂谈录播上，用户标注的误报中最长的一处
+被完全剔除。不同主播/混音风格下可微调 `--win-frac-min` 与 `--win-thresh`。
 
-旧版 demucs+pyin 特征管线在中文声调语言下区分度不足（标定分析见
-[docs/model-plan.md](docs/model-plan.md)），已被 FireRedVAD 取代；
-如需进一步提升检测质量，可参考该文档中的模型训练路线。
+## 歌名识别
+
+定位是**人工确认的辅助**，不自动填写歌名：截取该时间段音轨用 SenseVoiceSmall
+本地转写歌词（翻唱也能识别，绕开音频指纹"只能匹配原唱"的限制）→ 从转写文本
+取 3 个 2 词短窗口查 lrclib.net（其搜索为精确子串匹配，整句必漏）→ 合并去重后
+按歌词相似度排序，返回相似度 ≥ 0.35 的 Top-N 供点选。冷门歌、纯音乐、BGM 太吵
+或主播改词时可能给不出候选，手动填写即可。
+
+## 项目结构
+
+```
+AutoMusicCut/
+├── app.py              Web 服务（FastAPI，仅监听 127.0.0.1；文件头有 API 一览）
+├── analyze.py          命令行：检测候选唱歌区间
+├── cut.py              命令行：按清单批量无损剪切
+├── amc/
+│   ├── detect.py       FireRedVAD AED 检测 + 滑窗聚合
+│   ├── recognize.py    SenseVoiceSmall 转写 + lrclib 歌词检索
+│   ├── cut.py          清单解析与 ffmpeg 无损剪切
+│   └── timefmt.py      时间解析/格式化
+├── static/index.html   Web 前端（单文件，无构建步骤）
+└── start.bat           Windows 一键启动
+```
 
 ## 免责声明
 

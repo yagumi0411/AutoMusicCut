@@ -32,7 +32,7 @@ from fastapi.staticfiles import StaticFiles
 from amc.cut import cut as do_cut
 from amc.cut import parse_songlist, sanitize_filename
 from amc.detect import (
-    DEFAULT_MODEL_DIR, MERGE_GAP, WIN_SEC, WIN_THRESH, detect,
+    DEFAULT_MODEL_DIR, MERGE_GAP, WIN_FRAC_MIN, WIN_SEC, WIN_THRESH, detect,
 )
 from amc.recognize import recognize_segment
 from amc.timefmt import format_time, parse_time
@@ -198,6 +198,7 @@ def api_analyze(payload: dict):
             win_sec=payload.get("win_sec", WIN_SEC),
             win_thresh=payload.get("win_thresh", WIN_THRESH),
             merge_gap=payload.get("merge_gap", MERGE_GAP),
+            win_frac_min=payload.get("win_frac_min", WIN_FRAC_MIN),
             progress_cb=log,
         )
         return {"candidates_path": str(sess["candidates"])}

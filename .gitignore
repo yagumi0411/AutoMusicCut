@@ -23,10 +23,5 @@ songs.txt
 .idea/
 .vscode/
 
-# 测试产物
-tests/synth_work/
-tests/calibrate_work/
-tests/firered_work/
-
 # FireRedVAD 模型权重（首次运行自动从 HF 下载）
 pretrained_models/
