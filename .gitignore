@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# 分析中间产物（声源分离的 wav 等，体积巨大）
+work/
+
+# 输入视频与输出切片
+data/
+output/
+*.mp4
+*.flv
+*.mkv
+*.ts
+*.mov
+
+# 用户清单（含个人数据，默认不提交）
+candidates.txt
+songs.txt
+
+# IDE
+.idea/
+.vscode/
+
+# 测试产物
+tests/synth_work/
+tests/calibrate_work/
+tests/firered_work/
+
+# FireRedVAD 模型权重（首次运行自动从 HF 下载）
+pretrained_models/

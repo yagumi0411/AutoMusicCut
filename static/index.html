@@ -1,0 +1,516 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>AutoMusicCut — 唱歌片段剪切</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: "Segoe UI", "Microsoft YaHei", sans-serif; font-size: 14px;
+       background: #1e1e2e; color: #cdd6f4; display: flex; flex-direction: column;
+       height: 100vh; }
+header { padding: 10px 16px; background: #181825; border-bottom: 1px solid #313244;
+         display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+header h1 { font-size: 16px; margin-right: 12px; color: #f5c2e7; }
+input[type=text], input[type=number] { background: #313244; color: #cdd6f4;
+         border: 1px solid #45475a; border-radius: 4px; padding: 5px 8px; }
+button { background: #585b70; color: #cdd6f4; border: none; border-radius: 4px;
+         padding: 6px 12px; cursor: pointer; }
+button:hover { background: #6c7086; }
+button.primary { background: #a6e3a1; color: #1e1e2e; }
+button.primary:hover { background: #b8eeb2; }
+button.danger { background: #f38ba8; color: #1e1e2e; }
+main { flex: 1; display: flex; gap: 8px; padding: 8px 16px; overflow: hidden; }
+.panel { background: #181825; border: 1px solid #313244; border-radius: 6px;
+         padding: 10px; display: flex; flex-direction: column; overflow: hidden; }
+#panel-cand { flex: 1.2; }
+#panel-songs { flex: 1; }
+.panel h2 { font-size: 14px; margin-bottom: 8px; color: #89b4fa; }
+.tbl-wrap { flex: 1; overflow: auto; }
+table { width: 100%; border-collapse: collapse; }
+th, td { padding: 4px 8px; text-align: left; border-bottom: 1px solid #313244;
+         white-space: nowrap; }
+th { position: sticky; top: 0; background: #1e1e2e; color: #a6adc8; font-weight: normal; }
+tr.cand { cursor: pointer; }
+tr.cand:hover { background: #313244; }
+tr.selected { background: #45475a; }
+td input { width: 100%; min-width: 60px; }
+.conf-高 { color: #a6e3a1; }
+.conf-中 { color: #f9e2af; }
+.conf-低 { color: #f38ba8; }
+#video-wrap { display: none; padding: 8px 16px; background: #11111b;
+              border-top: 1px solid #313244; }
+#player { max-width: 640px; max-height: 240px; display: block; }
+#log { position: fixed; left: calc(100% - 432px); top: calc(100% - 170px);
+       width: 420px; z-index: 15; background: #11111b; border: 1px solid #313244;
+       border-radius: 6px; display: none; font-size: 12px; color: #a6adc8;
+       box-shadow: 0 4px 16px rgba(0,0,0,.4); }
+#log-head { display: flex; align-items: center; padding: 6px 10px;
+            border-bottom: 1px solid #313244; color: #89b4fa;
+            font-weight: bold; cursor: move; user-select: none; }
+#log-head .spacer { flex: 1; }
+#log-close { background: none; border: none; color: #a6adc8; cursor: pointer;
+             font-size: 14px; padding: 2px 6px; }
+#log-close:hover { color: #f38ba8; }
+#log-body { overflow: auto; max-height: 130px; padding: 6px 10px; }
+.modal { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: none;
+         align-items: center; justify-content: center; z-index: 10; }
+.modal-box { background: #1e1e2e; border: 1px solid #45475a; border-radius: 8px;
+             width: 560px; max-height: 70vh; display: flex; flex-direction: column; }
+.modal-head { padding: 8px 12px; display: flex; justify-content: space-between;
+              align-items: center; border-bottom: 1px solid #313244; }
+.modal-list { overflow: auto; flex: 1; padding: 4px 0; }
+.modal-list div { padding: 5px 12px; cursor: pointer; display: flex;
+                  justify-content: space-between; }
+.modal-list div:hover { background: #313244; }
+.dir { color: #89b4fa; }
+.size { color: #6c7086; font-size: 12px; }
+#progress { display: none; margin-left: 8px; color: #f9e2af; font-size: 12px; }
+#drop-hint { display: none; position: fixed; inset: 0; z-index: 20; pointer-events: none;
+             background: rgba(166,227,161,.12); border: 3px dashed #a6e3a1;
+             align-items: center; justify-content: center; font-size: 18px; color: #a6e3a1; }
+body.dragging #drop-hint { display: flex; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>AutoMusicCut</h1>
+  <input id="video-path" type="text" placeholder="视频路径，如 D:\Tools\AutoMusicCut\data\完整视频.mp4" style="flex:1; min-width:300px">
+  <button id="btn-browse">浏览</button>
+  <button id="btn-analyze" class="primary">分析</button>
+  <span id="progress"></span>
+  <span style="flex:1"></span>
+  <label><input id="chk-player" type="checkbox"> 内嵌播放器</label>
+  <button id="btn-cut" class="danger">剪切</button>
+</header>
+
+<main>
+  <div class="panel" id="panel-cand">
+    <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px">
+      <h2 style="margin:0; flex:1">候选唱歌段（点击行跳转试听）</h2>
+      <button id="btn-recognize-all">全部识别</button>
+    </div>
+    <div class="tbl-wrap">
+      <table id="tbl-cand">
+        <thead><tr>
+          <th>#</th><th>开始</th><th>结束</th><th>时长</th><th>置信度</th>
+          <th>概率</th><th>操作</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+  <div class="panel" id="panel-songs">
+    <h2>最终清单 songs.txt（可编辑）</h2>
+    <div class="tbl-wrap">
+      <table id="tbl-songs">
+        <thead><tr>
+          <th style="width:36px">#</th><th>歌曲名</th><th>开始</th><th>结束</th>
+          <th style="width:60px"></th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div style="display:flex; gap:8px; margin-top:8px">
+      <button id="btn-add-row">＋ 添加行</button>
+      <button id="btn-save-songs" class="primary">保存清单</button>
+      <span style="flex:1"></span>
+      <button id="btn-open-out">打开输出目录</button>
+    </div>
+  </div>
+</main>
+
+<div id="video-wrap"><video id="player" controls></video></div>
+<div id="log">
+  <div id="log-head"><span>日志</span><span class="spacer"></span>
+    <button id="log-close" title="收起">✕</button></div>
+  <div id="log-body"></div>
+</div>
+<div id="drop-hint">松开鼠标导入视频</div>
+
+<div class="modal" id="recognize-modal">
+  <div class="modal-box" style="width:640px">
+    <div class="modal-head">
+      <span id="recognize-head"></span>
+      <button id="btn-recognize-close">关闭</button>
+    </div>
+    <div style="padding:8px 12px; border-bottom:1px solid #313244; color:#a6adc8; font-size:12px"
+         id="recognize-transcript"></div>
+    <div class="modal-list" id="recognize-list"></div>
+  </div>
+</div>
+
+<div class="modal" id="browse-modal">
+  <div class="modal-box">
+    <div class="modal-head">
+      <span id="browse-path"></span>
+      <button id="btn-browse-close">关闭</button>
+    </div>
+    <div class="modal-list" id="browse-list"></div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const fmtH = s => { s = Math.round(s); const h = Math.floor(s/3600), m = Math.floor(s%3600/60), sec = s%60;
+  return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`; };
+const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+let currentVideo = localStorage.getItem('amc_video') || '';
+let outDir = '';
+$('video-path').value = currentVideo;
+
+// ---------- 日志 ----------
+function showLog() { $('log').style.display = 'block'; }
+function closeLog() {  // 关闭并清空，避免旧日志堆积再次挡住按钮
+  $('log').style.display = 'none';
+  $('log-body').innerHTML = '';
+}
+function log(msg) {
+  showLog();
+  const body = $('log-body');
+  const div = document.createElement('div');
+  div.textContent = msg;
+  body.appendChild(div);
+  body.scrollTop = body.scrollHeight;
+}
+$('log-close').onclick = closeLog;
+
+// ---------- 任务轮询 ----------
+async function pollTask(taskId, onDone) {
+  for (;;) {
+    const r = await (await fetch(`/api/task/${taskId}`)).json();
+    $('progress').style.display = 'block';
+    const msgs = r.messages || [];
+    if (msgs.length) $('progress').textContent = msgs[msgs.length - 1];
+    msgs.slice(-5).forEach(log);
+    if (r.status === 'done') { $('progress').textContent = '完成'; onDone(r.result); break; }
+    if (r.status === 'error') { $('progress').textContent = '失败'; log('错误: ' + r.error); break; }
+    await new Promise(res => setTimeout(res, 1000));
+  }
+  setTimeout(() => $('progress').style.display = 'none', 3000);
+}
+
+// ---------- 候选清单 ----------
+async function loadCandidates() {
+  const r = await (await fetch('/api/candidates')).json();
+  const tb = $('tbl-cand').querySelector('tbody');
+  tb.innerHTML = '';
+  if (!r.exists || !r.candidates.length) {
+    tb.innerHTML = '<tr><td colspan="8">（暂无候选，先点击"分析"）</td></tr>';
+    return;
+  }
+  for (const c of r.candidates) {
+    const tr = document.createElement('tr');
+    tr.className = 'cand';
+    tr.innerHTML = `<td>${c.index}</td><td>${c.start_str}</td><td>${c.end_str}</td>
+      <td>${fmtH(c.duration).slice(3)}</td>
+      <td class="conf-${c.confidence}">${c.confidence}</td>
+      <td>${c.score.toFixed(2)}</td>
+      <td><button class="recognize-cand">识别</button> <button class="add-cand">＋清单</button></td>`;
+    tr.onclick = e => {
+      if (e.target.closest('button')) return;
+      jumpTo(c.start);
+    };
+    tr.querySelector('.recognize-cand').onclick = () => recognizeSegment(c.start, c.end, c.start_str, c.end_str);
+    tr.querySelector('.add-cand').onclick = () => addCandidate(c);
+    tb.appendChild(tr);
+  }
+}
+
+async function addCandidate(c) {
+  const name = prompt(`歌曲名（${c.start_str} ~ ${c.end_str}）：`, '') || '';
+  await fetch('/api/candidates/add', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({candidates: [{start_str: c.start_str, end_str: c.end_str, name}]}),
+  });
+  log(`已加入清单: ${name || '(未命名)'}`);
+  loadSongs();
+}
+
+// ---------- 歌名识别 ----------
+async function recognizeSegment(start, end, startStr, endStr) {
+  if (!currentVideo) { alert('请先填写视频路径'); return; }
+  showRecognizeModal('识别中…', '正在转写歌词，请稍候');
+  const r = await (await fetch('/api/recognize', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({video: currentVideo, start, end}),
+  })).json();
+  await pollTask(r.task_id, result => renderRecognizeResult(result, startStr, endStr));
+}
+
+async function recognizeAll() {
+  if (!currentVideo) { alert('请先填写视频路径'); return; }
+  const c = await (await fetch('/api/candidates')).json();
+  if (!c.exists || !c.candidates.length) {
+    alert('候选清单为空，请先点击分析'); return;
+  }
+  if (!confirm(`对 ${c.candidates.length} 个候选段逐段识别歌名？\n（首次会下载转写模型，每段需数秒~数十秒）`)) return;
+  showRecognizeModal('全部识别中…', '正在逐段转写歌词，请稍候');
+  const r = await (await fetch('/api/recognize-all', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({video: currentVideo}),
+  })).json();
+  if (r.detail) { showRecognizeModal('全部识别', '错误: ' + r.detail); return; }
+  await pollTask(r.task_id, result => renderRecognizeAllResults(result));
+}
+
+function showRecognizeModal(head, transcript) {
+  $('recognize-head').textContent = head;
+  $('recognize-transcript').textContent = transcript || '';
+  $('recognize-list').innerHTML = '';
+  $('recognize-modal').style.display = 'flex';
+}
+$('btn-recognize-close').onclick = () => $('recognize-modal').style.display = 'none';
+
+function renderRecognizeResult(r, startStr, endStr) {
+  $('recognize-transcript').textContent = '转写歌词: ' + (r.transcript || '（无歌词文本）');
+  const list = $('recognize-list');
+  list.innerHTML = '';
+  if (!r.candidates || !r.candidates.length) {
+    list.innerHTML = '<div>未能匹配到歌名（可手动填写）</div>';
+    return;
+  }
+  r.candidates.forEach(c => {
+    const div = document.createElement('div');
+    div.innerHTML = `<span>🎵 ${esc(c.title)} — ${esc(c.artist)}</span>
+      <span class="size">${c.confidence} 置信 ${(c.sim * 100).toFixed(0)}%</span>`;
+    div.onclick = () => {
+      fillSongName(startStr, endStr, c.title);
+      $('recognize-modal').style.display = 'none';
+    };
+    list.appendChild(div);
+  });
+}
+
+function renderRecognizeAllResults(r) {
+  $('recognize-transcript').textContent = '';
+  const list = $('recognize-list');
+  list.innerHTML = '';
+  (r.results || []).forEach(res => {
+    const head = document.createElement('div');
+    head.style.cssText = 'color:#89b4fa; font-weight:bold; padding:8px 12px 2px; border-top:1px solid #313244;';
+    head.textContent = `${res.start_str} ~ ${res.end_str}`;
+    list.appendChild(head);
+    if (!res.candidates || !res.candidates.length) {
+      const div = document.createElement('div');
+      div.textContent = '（未匹配到歌名）';
+      list.appendChild(div);
+      return;
+    }
+    res.candidates.slice(0, 2).forEach(c => {
+      const div = document.createElement('div');
+      div.innerHTML = `<span>🎵 ${esc(c.title)} — ${esc(c.artist)}</span>
+        <span class="size">${c.confidence} ${(c.sim * 100).toFixed(0)}%</span>`;
+      div.onclick = () => {
+        fillSongName(res.start_str, res.end_str, c.title);
+      };
+      list.appendChild(div);
+    });
+  });
+}
+
+function fillSongName(startStr, endStr, title) {
+  fetch('/api/candidates/add', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({candidates: [{start_str: startStr, end_str: endStr, name: title}]}),
+  }).then(() => {
+    log(`已填写歌名: ${title}`);
+    loadSongs();
+  });
+}
+
+$('btn-recognize-all').onclick = recognizeAll;
+
+// ---------- 最终清单 ----------
+async function loadSongs() {
+  const r = await (await fetch('/api/songs')).json();
+  const tb = $('tbl-songs').querySelector('tbody');
+  tb.innerHTML = '';
+  r.songs.forEach((s, i) => tb.appendChild(songRow(i + 1, s)));
+  if (!r.songs.length) tb.innerHTML = '<tr><td colspan="5">（空，从候选清单添加或手动填写）</td></tr>';
+}
+
+function songRow(no, s) {
+  const tr = document.createElement('tr');
+  tr.innerHTML = `<td>${no}</td>
+    <td><input class="in-name" value="${esc(s.name)}"></td>
+    <td><input class="in-start" value="${s.start_str}"></td>
+    <td><input class="in-end" value="${s.end_str}"></td>
+    <td><button class="del-row">删除</button></td>`;
+  tr.querySelector('.del-row').onclick = () => { tr.remove(); renumber(); };
+  return tr;
+}
+
+function renumber() {
+  document.querySelectorAll('#tbl-songs tbody tr').forEach((tr, i) => {
+    tr.children[0].textContent = i + 1;
+  });
+}
+
+$('btn-add-row').onclick = () => {
+  const tb = $('tbl-songs').querySelector('tbody');
+  if (tb.querySelector('td[colspan]')) tb.innerHTML = '';
+  tb.appendChild(songRow(tb.children.length + 1,
+      {name: '', start_str: '00:00:00', end_str: '00:00:00'}));
+};
+
+async function saveSongs() {
+  const songs = [];
+  document.querySelectorAll('#tbl-songs tbody tr').forEach(tr => {
+    if (tr.querySelector('td[colspan]')) return;
+    songs.push({
+      name: tr.querySelector('.in-name').value.trim(),
+      start_str: tr.querySelector('.in-start').value.trim(),
+      end_str: tr.querySelector('.in-end').value.trim(),
+    });
+  });
+  const r = await fetch('/api/songs', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({songs}),
+  });
+  if (r.ok) { log(`清单已保存（${songs.length} 条）`); }
+  else { log('保存失败: ' + (await r.json()).detail); }
+}
+$('btn-save-songs').onclick = saveSongs;
+
+// ---------- 分析 / 剪切 ----------
+$('btn-analyze').onclick = async () => {
+  const video = $('video-path').value.trim();
+  if (!video) { alert('请先填写视频路径'); return; }
+  localStorage.setItem('amc_video', video);
+  currentVideo = video;
+  log('开始分析: ' + video);
+  const r = await (await fetch('/api/analyze', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({video}),
+  })).json();
+  await pollTask(r.task_id, () => loadCandidates());
+  loadCandidates();
+};
+
+$('btn-cut').onclick = async () => {
+  if (!currentVideo) { alert('请先填写视频路径'); return; }
+  await saveSongs();
+  log('开始剪切: ' + currentVideo);
+  const r = await (await fetch('/api/cut', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({video: currentVideo}),
+  })).json();
+  await pollTask(r.task_id, result => {
+    outDir = result.out_dir;
+    log(`剪切完成，输出 ${result.items.length} 段:`);
+    result.items.forEach(it => log(`  ${it.file}（${it.actual_str}）`));
+  });
+};
+
+$('btn-open-out').onclick = async () => {
+  if (!outDir) { alert('还没有剪切输出'); return; }
+  await fetch(`/api/open?path=${encodeURIComponent(outDir)}`);
+};
+
+// ---------- 目录浏览 ----------
+async function browse(path) {
+  const r = await (await fetch(`/api/browse?path=${encodeURIComponent(path || '')}`)).json();
+  $('browse-path').textContent = r.path;
+  const list = $('browse-list');
+  list.innerHTML = '';
+  const mk = (icon, name, info, onClick) => {
+    const div = document.createElement('div');
+    div.innerHTML = `<span>${icon} ${esc(name)}</span><span class="size">${info || ''}</span>`;
+    div.onclick = onClick;
+    list.appendChild(div);
+  };
+  if (r.parent) mk('📁', '..', '', () => browse(r.parent));
+  for (const e of r.entries) {
+    if (e.is_dir) mk('📁', e.name, '', () => browse(e.path));
+    else if (e.is_video) mk('🎬', e.name, fmtSize(e.size), () => {
+      $('video-path').value = e.path;
+      currentVideo = e.path;
+      localStorage.setItem('amc_video', e.path);
+      closeBrowse();
+      initPlayer();
+    });
+  }
+}
+function fmtSize(n) {
+  if (n == null) return '';
+  if (n > 1e9) return (n / 1e9).toFixed(1) + ' GB';
+  if (n > 1e6) return (n / 1e6).toFixed(0) + ' MB';
+  return (n / 1e3).toFixed(0) + ' KB';
+}
+function closeBrowse() { $('browse-modal').style.display = 'none'; }
+$('btn-browse').onclick = () => {
+  $('browse-modal').style.display = 'flex';
+  browse($('video-path').value || '');
+};
+$('btn-browse-close').onclick = closeBrowse;
+
+// ---------- 拖入导入视频 ----------
+// dragenter/dragleave 会在子元素间来回触发，用计数防止高亮闪烁
+let _dragDepth = 0;
+document.addEventListener('dragenter', e => {
+  e.preventDefault();
+  if (!e.dataTransfer || !e.dataTransfer.types.includes('Files')) return;
+  _dragDepth++;
+  document.body.classList.add('dragging');
+});
+document.addEventListener('dragover', e => e.preventDefault());
+document.addEventListener('dragleave', e => {
+  e.preventDefault();
+  if (--_dragDepth <= 0) {
+    _dragDepth = 0;
+    document.body.classList.remove('dragging');
+  }
+});
+document.addEventListener('drop', async e => {
+  e.preventDefault();
+  document.body.classList.remove('dragging');
+  const f = (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]);
+  if (!f) return;
+  if (!/\.(mp4|m4v|webm|flv|mkv|ts|mov|avi|wmv)$/i.test(f.name)) {
+    alert(`不是视频文件: ${f.name}`); return;
+  }
+  log(`正在定位导入的视频: ${f.name}`);
+  // hint_dir：上次视频所在的目录（兼容 / 与 \ 路径分隔符）
+  const m = currentVideo.match(/^.*[\\\/]/);
+  const r = await fetch('/api/locate-video', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name: f.name, hint_dir: m ? m[0] : ''}),
+  });
+  if (!r.ok) { alert('未在常用目录找到该文件，请用「浏览」手动选择'); return; }
+  const {path} = await r.json();
+  $('video-path').value = path;
+  currentVideo = path;
+  localStorage.setItem('amc_video', path);
+  log(`已导入视频: ${path}`);
+  initPlayer();
+});
+
+// ---------- 播放器 ----------
+function initPlayer() {
+  const show = $('chk-player').checked;
+  $('video-wrap').style.display = show && currentVideo ? 'block' : 'none';
+  if (show && currentVideo) {
+    $('player').src = `/api/stream?path=${encodeURIComponent(currentVideo)}`;
+  }
+}
+$('chk-player').onchange = initPlayer;
+
+function jumpTo(sec) {
+  if ($('chk-player').checked && currentVideo) {
+    initPlayer();
+    $('player').currentTime = Math.max(0, sec);
+    $('player').play().catch(() => {});
+  } else {
+    log('请勾选"内嵌播放器"后点击候选行跳转试听');
+  }
+}
+
+// ---------- 初始加载 ----------
+loadCandidates();
+loadSongs();
+initPlayer();
+</script>
+</body>
+</html>

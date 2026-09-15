@@ -1,0 +1,8 @@
+fireredvad
+huggingface_hub
+numpy
+soundfile
+fastapi
+uvicorn
+funasr
+httpx
