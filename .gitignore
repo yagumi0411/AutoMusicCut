@@ -2,6 +2,12 @@
 __pycache__/
 *.py[cod]
 .venv/
+.env
+.env.*
+!.env.example
+.pytest_cache/
+.coverage
+htmlcov/
 
 # 分析中间产物（声源分离的 wav 等，体积巨大）
 work/
@@ -14,6 +20,9 @@ output/
 *.mkv
 *.ts
 *.mov
+*.m4v
+*.webm
+*.wmv
 
 # 用户清单（含个人数据，默认不提交）
 candidates.txt

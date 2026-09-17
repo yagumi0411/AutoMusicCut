@@ -39,7 +39,7 @@ from amc.detect import (
     WIN_THRESH,
     detect,
 )
-from amc.recognize import recognize_segment
+from amc.recognize import recognize_segment, transcribe_segment
 from amc.timefmt import format_time, parse_time
 
 ROOT = Path(__file__).resolve().parent
@@ -298,11 +298,20 @@ def api_candidates_add(payload: dict):
     for item in payload.get("candidates", []):
         name = (item.get("name") or "").strip() or f"歌曲{len(blocks) + 1}"
         blocks.append(f"{name}\n{item['start_str']}\n{item['end_str']}")
-    songs_path.write_text("\n\n".join(blocks) + "\n", encoding="utf-8")
+    _write_songs_text("\n\n".join(blocks) + "\n")
     return {"count": len(payload.get("candidates", []))}
 
 
 # ---- 最终清单 ----
+
+def _write_songs_text(text, video=""):
+    """同步保存工作清单与 result 中便于交付的备份。"""
+    sess = _current_session_paths(video)
+    if not sess:
+        _current_songs_path(video).write_text(text, encoding="utf-8")
+        return
+    sess["songs"].write_text(text, encoding="utf-8")
+    (sess["result"] / "songs.txt").write_text(text, encoding="utf-8")
 
 def _load_songs(video=""):
     songs_path = _current_songs_path(video)
@@ -331,8 +340,7 @@ def api_songs_save(payload: dict):
         if e <= s:
             raise HTTPException(400, f"{name!r} 结束时间早于开始时间")
         blocks.append(f"{name}\n{format_time(s)}\n{format_time(e)}")
-    _current_songs_path().write_text("\n\n".join(blocks) + ("\n" if blocks else ""),
-                                     encoding="utf-8")
+    _write_songs_text("\n\n".join(blocks) + ("\n" if blocks else ""))
     return {"count": len(blocks)}
 
 
@@ -353,13 +361,36 @@ def api_recognize(payload: dict):
         raise HTTPException(400, "时间段非法")
     task_id = _new_task()
     log = _task_progress(task_id)
-    lang = payload.get("lang", "zh")
+    lang = payload.get("lang", "auto")
     sess = _session_paths(video)
 
     def run():
         log(f"正在识别 {payload.get('name', '')} ({format_time(start)} ~ {format_time(end)})...")
         return recognize_segment(video, start, end, lang=lang,
                                  work_dir=str(sess["temp"]))
+
+    _run_task(task_id, run)
+    return {"task_id": task_id}
+
+
+@app.post("/api/transcribe")
+def api_transcribe(payload: dict):
+    """仅转写候选段，供用户复制歌词自行搜索。"""
+    video = payload.get("video", "")
+    try:
+        start, end = float(payload["start"]), float(payload["end"])
+    except (KeyError, TypeError, ValueError):
+        raise HTTPException(400, "start/end 必须是秒数")
+    if not video or not Path(video).is_file() or not 0 <= start < end:
+        raise HTTPException(400, "视频路径或时间段无效")
+    task_id = _new_task()
+    log = _task_progress(task_id)
+    sess = _session_paths(video)
+
+    def run():
+        log(f"正在转写 {format_time(start)} ~ {format_time(end)}...")
+        texts = transcribe_segment(video, start, end, work_dir=str(sess["temp"]))
+        return {"transcript": "\n\n".join(texts), "window_count": len(texts)}
 
     _run_task(task_id, run)
     return {"task_id": task_id}
@@ -381,7 +412,7 @@ def api_recognize_all(payload: dict):
         raise HTTPException(400, "候选清单为空，请先执行分析")
     task_id = _new_task()
     log = _task_progress(task_id)
-    lang = payload.get("lang", "zh")
+    lang = payload.get("lang", "auto")
     sess = _session_paths(video)
 
     def run():

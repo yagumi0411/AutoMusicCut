@@ -73,6 +73,10 @@ td.jump:hover { color: #89b4fa; text-decoration: underline; }
 .dir { color: #89b4fa; }
 .size { color: #6c7086; font-size: 12px; }
 #progress { display: none; margin-left: 8px; color: #f9e2af; font-size: 12px; }
+#candidate-filters { display: flex; align-items: center; gap: 6px; color: #a6adc8; font-size: 12px; }
+#candidate-filters input { width: 72px; padding: 3px 6px; }
+#candidate-filter-summary { color: #89b4fa; white-space: nowrap; }
+#btn-clear-candidate-filters { padding: 4px 8px; font-size: 12px; }
 #drop-hint { display: none; position: fixed; inset: 0; z-index: 20; pointer-events: none;
              background: rgba(166,227,161,.12); border: 3px dashed #a6e3a1;
              align-items: center; justify-content: center; font-size: 18px; color: #a6e3a1; }
@@ -95,6 +99,12 @@ body.dragging #drop-hint { display: flex; }
   <div class="panel" id="panel-cand">
     <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px">
       <h2 style="margin:0; flex:1">候选唱歌段（点击行跳转试听）</h2>
+      <div id="candidate-filters">
+        <label>最短 <input id="filter-min-duration" type="number" min="0" step="0.1" placeholder="秒"> 秒</label>
+        <label>最低置信度 <input id="filter-min-confidence" type="number" min="0" max="1" step="0.01" placeholder="0–1"></label>
+        <span id="candidate-filter-summary">显示 0 / 0 条</span>
+        <button id="btn-clear-candidate-filters" type="button">清除过滤</button>
+      </div>
       <button id="btn-recognize-all">全部识别</button>
     </div>
     <div class="tbl-wrap">
@@ -157,6 +167,7 @@ body.dragging #drop-hint { display: flex; }
   <div class="modal-box" style="width:640px">
     <div class="modal-head">
       <span id="recognize-head"></span>
+      <button id="btn-copy-transcript" style="display:none">复制文本</button>
       <button id="btn-recognize-close">关闭</button>
     </div>
     <div style="padding:8px 12px; border-bottom:1px solid #313244; color:#a6adc8; font-size:12px"
@@ -184,6 +195,13 @@ const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>'
 let currentVideo = localStorage.getItem('amc_video') || '';
 let outDir = '';
 $('video-path').value = currentVideo;
+
+function candidateMatchesFilters(c) {
+  const minDuration = $('filter-min-duration').valueAsNumber;
+  const minConfidence = $('filter-min-confidence').valueAsNumber;
+  return (Number.isNaN(minDuration) || c.duration >= minDuration) &&
+    (Number.isNaN(minConfidence) || c.score >= minConfidence);
+}
 
 // 输出目录由后端按视频名固定为 work/<视频名>/result，
 // 选定视频时即可确定，不必等剪切完成
@@ -277,10 +295,17 @@ async function loadCandidates() {
   const tb = $('tbl-cand').querySelector('tbody');
   tb.innerHTML = '';
   if (!r.exists || !r.candidates.length) {
+    $('candidate-filter-summary').textContent = '显示 0 / 0 条';
     tb.innerHTML = '<tr><td colspan="8">（暂无候选，先点击"分析"）</td></tr>';
     return;
   }
-  for (const c of r.candidates) {
+  const candidates = r.candidates.filter(candidateMatchesFilters);
+  $('candidate-filter-summary').textContent = `显示 ${candidates.length} / ${r.candidates.length} 条`;
+  if (!candidates.length) {
+    tb.innerHTML = '<tr><td colspan="8">（没有符合当前过滤条件的候选）</td></tr>';
+    return;
+  }
+  for (const c of candidates) {
     const tr = document.createElement('tr');
     tr.className = 'cand';
     tr.innerHTML = `<td>${c.index}</td>
@@ -289,7 +314,7 @@ async function loadCandidates() {
       <td>${fmtH(c.duration).slice(3)}</td>
       <td class="conf-${c.confidence}">${c.confidence}</td>
       <td>${c.score.toFixed(2)}</td>
-      <td><button class="recognize-cand">识别</button> <button class="add-cand">＋清单</button></td>`;
+      <td><button class="recognize-cand">识别</button> <button class="add-cand">＋清单</button> <button class="transcribe-cand">转文字</button></td>`;
     tr.onclick = e => {
       if (e.target.closest('button')) return;
       // 点开始/结束单元格跳到各自时间，点行内其他位置默认跳到开始
@@ -298,9 +323,19 @@ async function loadCandidates() {
     };
     tr.querySelector('.recognize-cand').onclick = () => recognizeSegment(c.start, c.end, c.start_str, c.end_str);
     tr.querySelector('.add-cand').onclick = () => addCandidate(c);
+    tr.querySelector('.transcribe-cand').onclick = () => transcribeSegment(c.start, c.end, c.start_str, c.end_str);
     tb.appendChild(tr);
   }
 }
+
+['filter-min-duration', 'filter-min-confidence'].forEach(id => {
+  $(id).addEventListener('input', loadCandidates);
+});
+$('btn-clear-candidate-filters').onclick = () => {
+  $('filter-min-duration').value = '';
+  $('filter-min-confidence').value = '';
+  loadCandidates();
+};
 
 // 往最终清单追加一条并落盘。
 // 不走 /api/candidates/add：那个接口是"读磁盘旧内容 → 追加 → 写回"，
@@ -335,13 +370,28 @@ async function recognizeSegment(start, end, startStr, endStr) {
     err => { $('recognize-head').textContent = '识别失败'; $('recognize-transcript').textContent = err; });
 }
 
+async function transcribeSegment(start, end, startStr, endStr) {
+  if (!currentVideo) { alert('请先填写视频路径'); return; }
+  showRecognizeModal('转文字中…', '正在转写音频，请稍候');
+  const r = await (await fetch('/api/transcribe', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({video: currentVideo, start, end}),
+  })).json();
+  if (r.detail) { $('recognize-head').textContent = '转文字失败'; $('recognize-transcript').textContent = r.detail; return; }
+  await pollTask(r.task_id, result => {
+    $('recognize-head').textContent = `转写文本（${startStr} ~ ${endStr}）`;
+    $('recognize-transcript').textContent = result.transcript || '（未识别出文本）';
+    $('btn-copy-transcript').style.display = 'inline-block';
+  }, err => { $('recognize-head').textContent = '转文字失败'; $('recognize-transcript').textContent = err; });
+}
+
 async function recognizeAll() {
   if (!currentVideo) { alert('请先填写视频路径'); return; }
   const c = await (await fetch('/api/candidates')).json();
   if (!c.exists || !c.candidates.length) {
     alert('候选清单为空，请先点击分析'); return;
   }
-  if (!confirm(`对 ${c.candidates.length} 个候选段逐段识别歌名？\n（首次会下载转写模型，每段需数秒~数十秒）`)) return;
+  if (!confirm(`对 ${c.candidates.length} 个候选段逐段识别歌名？\n（长片段会抽取多个窗口转写，首次会下载模型，每段需数秒~数十秒）`)) return;
   showRecognizeModal('全部识别中…', '正在逐段转写歌词，请稍候');
   const r = await (await fetch('/api/recognize-all', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -354,10 +404,22 @@ async function recognizeAll() {
 function showRecognizeModal(head, transcript) {
   $('recognize-head').textContent = head;
   $('recognize-transcript').textContent = transcript || '';
+  $('btn-copy-transcript').style.display = 'none';
   $('recognize-list').innerHTML = '';
   $('recognize-modal').style.display = 'flex';
 }
 $('btn-recognize-close').onclick = () => $('recognize-modal').style.display = 'none';
+$('btn-copy-transcript').onclick = async () => {
+  const text = $('recognize-transcript').textContent;
+  if (!text || text.startsWith('（')) return;
+  try {
+    await navigator.clipboard.writeText(text);
+    $('btn-copy-transcript').textContent = '已复制';
+    setTimeout(() => $('btn-copy-transcript').textContent = '复制文本', 1500);
+  } catch (_) {
+    alert('复制失败，请手动选择文本复制');
+  }
+};
 
 function renderRecognizeResult(r, startStr, endStr) {
   $('recognize-head').textContent = `识别结果（${startStr} ~ ${endStr}）`;

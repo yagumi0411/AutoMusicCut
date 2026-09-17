@@ -6,9 +6,10 @@
 - 用文本相似度过滤候选曲目，返回 Top-N + 置信度，由用户在 Web 上点选确认。
 
 搜索策略（实证校准）：
-lrclib 的 /api/search 是精确子串匹配——实测 3 词短片段能命中、
-整句（8 词）返回 0，且 ASR 转写有同音/词形偏差，整句必漏。
-因此用多个 2~3 词短窗口分别查询，合并去重后统一按歌词相似度确认。
+长句的歌词检索召回差，且 ASR 转写有同音/词形偏差。因此从转写中抽取多个
+短窗口分别查询；中日韩文本没有天然空格，按字符窗口切分，避免把整段歌词当成
+一个查询词。候选曲目的评分也按“转写片段能否在完整歌词中匹配”计算，而非拿
+片段与整首歌词作全局相似度比较。
 
 模型（SenseVoiceSmall）懒加载单例，一次加载、多段复用。
 搜索结果可能为空/不准：冷门歌、纯音乐、BGM 太吵、主播明显改词时给不出答案，
@@ -27,10 +28,13 @@ import httpx
 
 ASR_MODEL = "iic/SenseVoiceSmall"
 LRCLIB_API = "https://lrclib.net/api/search"
-MIN_SIM = 0.35            # 候选相似度下限（低于该值的候选直接丢弃）
-N_QUERIES = 3             # 短查询个数（每段歌词拆出多少个搜索词）
-QUERY_WINDOW = 2          # 每个搜索窗口的词数
+MIN_SIM = 0.20            # 片段匹配下限；仅用于人工确认候选，优先保证召回
+N_QUERIES = 5             # 短查询个数（每段歌词拆出多少个搜索词）
+QUERY_WINDOW = 2          # 拉丁文字每个搜索窗口的词数
+CJK_QUERY_WINDOW = 6      # 中日韩文字没有分词边界，使用字符窗口
 SEARCH_TOP_K = 5          # 每次查询取回的候选上限
+RECOGNITION_WINDOW_SEC = 35
+RECOGNITION_SAMPLE_POSITIONS = (0.15, 0.5, 0.85)
 
 
 # ---- ASR：懒加载单例 ----
@@ -59,7 +63,7 @@ def ensure_asr():
     return _SENSEVOICE
 
 
-def transcribe(wav_path, lang="zh"):
+def transcribe(wav_path, lang="auto"):
     """ASR 转写给定 wav 的歌词，返回纯歌词文本（带事件标签剥离后）。
 
     wav 需为按时间段截取好的窗口（见 recognize_segment）。
@@ -83,27 +87,33 @@ def transcribe(wav_path, lang="zh"):
     return " ".join(text.split())
 
 
-def build_queries(text, n=3, window=2):
-    """从 ASR 歌词里挑 n 个 2~3 词短片段作搜索词。
+_QUERY_UNIT_RE = re.compile(
+    r"[一-鿿぀-ヿ가-힣]|[a-zA-Z0-9]+")
 
-    lrclib 的搜索是精确子串匹配：整句/长句召回差（实测 3 词中、8 词空），
-    且 ASR 带同音/词形偏差时整句必漏。策略：均匀分布在歌词各处的短窗口
-    分别查询，合并后用歌词相似度统一确认，兼顾召回与准确。
-    避开开头（转写最容易歪的部分）。
+
+def build_queries(text, n=N_QUERIES, window=QUERY_WINDOW):
+    """从 ASR 歌词里挑多个短片段作搜索词。
+
+    拉丁文字按词切分；中日韩文字通常没有空格，按字符切分并使用 6 字窗口。
+    原实现只按空格切分，中文转写会被视为一个超长查询，几乎无法命中。
     """
-    t = re.sub(r"[^一-鿿぀-ヿ가-힣a-zA-Z0-9 ]", " ", text).strip()
-    words = t.split()
-    nw = len(words)
+    units = _QUERY_UNIT_RE.findall(text)
+    nw = len(units)
     if not nw:
         return []
+    cjk = any(len(unit) == 1 and not unit.isascii() for unit in units)
+    window = CJK_QUERY_WINDOW if cjk else window
+    joiner = "" if cjk else " "
     if nw <= window + 2:
-        return [" ".join(words)]
-    start = max(1, nw // 3)            # 从 1/3 处开始，避开开头
+        return [joiner.join(units)]
+    start = max(1, nw // 5)            # 略过片段开头的切换杂音
     span = nw - start
     queries = []
     for k in range(n):
         i = min(nw - window, start + (span * (k + 1)) // (n + 1))
-        queries.append(" ".join(words[i:i + window]))
+        query = joiner.join(units[i:i + window])
+        if query not in queries:
+            queries.append(query)
     return queries
 
 
@@ -133,24 +143,26 @@ _KEEP_CHARS_RE = re.compile(r"[^A-Za-z一-鿿぀-ヿ가-힣0-9]+")
 
 
 def _text_sim(a, b):
-    """文本相似度 0~1（SequenceMatcher，忽略大小写与标点）。
+    """转写片段在完整歌词中的匹配度 0~1（忽略大小写与标点）。
 
-    保留范围必须与 build_queries 一致（中日韩 + 拉丁 + 数字）：此前只留
-    CJK 汉字与拉丁字母，日文假名、韩文谚文被整体清空，导致日韩歌曲的
-    相似度恒为 0，识别结果全被 MIN_SIM 过滤掉。
+    不能使用 SequenceMatcher 的全局 ratio：即使转写完全正确，它也只是整首
+    歌词的一小段，分数仍会低得不合理。这里统计转写文本被歌词中连续匹配块
+    覆盖的比例，以适配片段识别场景。
     """
     def compact(s):
         return _KEEP_CHARS_RE.sub("", s).lower()
     a, b = compact(a), compact(b)
     if not a or not b:
         return 0.0
-    return difflib.SequenceMatcher(None, a, b).ratio()
+    blocks = difflib.SequenceMatcher(None, a, b).get_matching_blocks()
+    matched = sum(block.size for block in blocks if block.size >= 2)
+    return matched / len(a)
 
 
 def confidence_of_sim(sim):
-    if sim >= 0.5:
+    if sim >= 0.7:
         return "高"
-    if sim >= 0.35:
+    if sim >= 0.4:
         return "中"
     return "低"
 
@@ -168,16 +180,24 @@ def segment_wav(video, start, end, out_wav):
     return out_wav
 
 
-def recognize_segment(video, start, end, lang="zh", work_dir=None):
-    """识别单个 [start, end) 秒段的歌名。
+def recognition_windows(start, end):
+    """为长候选段挑选多个转写窗口，避开首尾切换噪声。
 
-    返回 {"transcript", "query", "candidates": [{title, artist, sim, confidence}]}
-    candidates 按相似度降序，可能为空。
-
-    work_dir: 临时 wav 的存放目录，默认用系统临时目录。此前写在**源视频
-    所在目录**，只读目录/网络盘会失败，且同一时间段的并发识别会撞名。
+    候选段常含前奏、间奏或主播说话。对超过一个窗口的片段，在其前、中、后部
+    各抽取约 35 秒；窗口彼此独立评分，只要任一窗口转写到歌词即可召回曲目。
     """
-    Path(video)
+    duration = end - start
+    if duration <= RECOGNITION_WINDOW_SEC:
+        return [(start, end)]
+    travel = duration - RECOGNITION_WINDOW_SEC
+    return [
+        (start + travel * pos, start + travel * pos + RECOGNITION_WINDOW_SEC)
+        for pos in RECOGNITION_SAMPLE_POSITIONS
+    ]
+
+
+def transcribe_segment(video, start, end, lang="auto", work_dir=None):
+    """转写候选段的一个或多个窗口，返回非空文本列表。"""
     if work_dir:
         Path(work_dir).mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(
@@ -186,32 +206,54 @@ def recognize_segment(video, start, end, lang="zh", work_dir=None):
     os.close(fd)
     tmp_wav = Path(tmp_name)
     try:
-        segment_wav(video, start, end, tmp_wav)
-        text = transcribe(tmp_wav, lang=lang)
-
-        queries = build_queries(text)
-        if not queries:
-            return {"transcript": text, "query": "", "candidates": []}
-
-        # 多查询合并候选，按 trackName+artistName 去重
-        merged = {}
-        for q in queries:
-            for s in search_lyrics(q):
-                key = (s.get("trackName", ""), s.get("artistName", ""))
-                merged.setdefault(key, s)
-
-        cands = []
-        for s in merged.values():
-            sim = _text_sim(text, s.get("plainLyrics") or "")
-            if sim >= MIN_SIM:
-                cands.append({
-                    "title": s.get("trackName", ""),
-                    "artist": s.get("artistName", ""),
-                    "sim": round(sim, 3),
-                    "confidence": confidence_of_sim(sim),
-                })
-        cands.sort(key=lambda c: c["sim"], reverse=True)
-        return {"transcript": text, "query": " | ".join(queries),
-                "candidates": cands}
+        texts = []
+        for window_start, window_end in recognition_windows(start, end):
+            segment_wav(video, window_start, window_end, tmp_wav)
+            text = transcribe(tmp_wav, lang=lang)
+            if text:
+                texts.append(text)
+        return texts
     finally:
         tmp_wav.unlink(missing_ok=True)
+
+
+def recognize_segment(video, start, end, lang="auto", work_dir=None):
+    """识别单个 [start, end) 秒段的歌名。
+
+    返回 {"transcript", "query", "candidates": [{title, artist, sim, confidence}]}
+    candidates 按相似度降序，可能为空。
+
+    work_dir: 临时 wav 的存放目录，默认用系统临时目录。此前写在**源视频
+    所在目录**，只读目录/网络盘会失败，且同一时间段的并发识别会撞名。
+    """
+    texts = transcribe_segment(video, start, end, lang=lang, work_dir=work_dir)
+    queries = []
+    for text in texts:
+        for query in build_queries(text):
+            if query not in queries:
+                queries.append(query)
+
+    if not queries:
+        return {"transcript": " / ".join(texts), "query": "", "candidates": []}
+
+    # 多查询合并候选，按 trackName+artistName 去重
+    merged = {}
+    for q in queries:
+        for s in search_lyrics(q):
+            key = (s.get("trackName", ""), s.get("artistName", ""))
+            merged.setdefault(key, s)
+
+    cands = []
+    for s in merged.values():
+        lyrics = s.get("plainLyrics") or ""
+        sim = max(_text_sim(text, lyrics) for text in texts)
+        if sim >= MIN_SIM:
+            cands.append({
+                "title": s.get("trackName", ""),
+                "artist": s.get("artistName", ""),
+                "sim": round(sim, 3),
+                "confidence": confidence_of_sim(sim),
+            })
+    cands.sort(key=lambda c: c["sim"], reverse=True)
+    return {"transcript": " / ".join(texts), "query": " | ".join(queries),
+            "candidates": cands}

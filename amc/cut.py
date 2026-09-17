@@ -163,7 +163,9 @@ def cut(video, songlist_path, out_dir="output", pad=1.5, min_duration=0.0,
     for i, (name, s, e) in enumerate(songs, 1):
         if e > duration:
             log(f"[{i:02d}] 警告: {name!r} 结束时间 {format_time(e)} 超出视频时长，已截断")
-        out_path = out_dir / f"{i:02d}_{sanitize_filename(name)}.mp4"
+        # 不用序号前缀；以原始时间范围区分同名歌曲，重跑时路径也保持稳定。
+        time_tag = f"{format_time(s).replace(':', '')}-{format_time(e).replace(':', '')}"
+        out_path = out_dir / f"{sanitize_filename(name)}_{time_tag}.mp4"
         if out_path.exists() and not overwrite:
             log(f"[{i}/{total}] 已存在，跳过: {out_path.name}（加 --overwrite 可覆盖）")
             report.append({"name": name, "out": out_path, "requested": (s, e),
