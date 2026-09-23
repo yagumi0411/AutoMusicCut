@@ -12,7 +12,7 @@
 ```
 ① 分析    自动检测候选唱歌区间 → work/<视频名>/temp/candidates.txt
 ② 人工    对照原视频试听，整理最终清单 → temp/songs.txt 与 result/songs.txt
-③ 剪切    按清单批量无损剪切 → work/<视频名>/result/歌曲名_起始-结束.mp4
+③ 剪切    按清单批量无损剪切 → work/<视频名>/result/歌曲名.mp4
 ```
 
 - **候选清单只用于辅助定位**，最终以 `songs.txt` 为准；检测漏掉的唱歌段
@@ -77,7 +77,7 @@ pip install -r requirements.txt
 ```
 work/<视频名>_<路径哈希>/
 ├── temp/    candidates.txt、songs.txt、audio_<哈希>.wav（16k 音轨缓存，可复用）
-└── result/  歌曲名_起始-结束.mp4、songs.txt（最终清单备份）
+└── result/  歌曲名.mp4（同名为歌曲名2.mp4）、songs.txt（最终清单备份）
 ```
 
 > 内嵌播放器只支持浏览器可解码的容器（mp4/m4v 等）；flv/mkv/ts 请用外部

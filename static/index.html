@@ -39,15 +39,41 @@ td.jump:hover { color: #89b4fa; text-decoration: underline; }
 .conf-高 { color: #a6e3a1; }
 .conf-中 { color: #f9e2af; }
 .conf-低 { color: #f38ba8; }
-#video-wrap { display: none; padding: 8px 16px; background: #11111b;
-              border-top: 1px solid #313244; }
-#player { max-width: 640px; max-height: 240px; display: block; }
+#video-wrap { display: none; position: relative; padding: 12px 16px 8px; background: #11111b;
+              border-top: 1px solid #313244; height: 310px; flex: 0 0 auto; }
+#player-resizer { position: absolute; top: 0; left: 0; right: 0; height: 9px;
+                  cursor: ns-resize; touch-action: none; user-select: none; }
+#player-resizer::after { content: ''; display: block; width: 48px; height: 3px;
+                         margin: 3px auto; border-radius: 2px; background: #585b70; }
+#player-resizer:hover, #player-resizer:focus-visible { background: #313244; }
+#player-layout { display: flex; gap: 12px; align-items: stretch; height: 100%; min-height: 0; }
+#player-column { flex: 2 1 640px; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+#player { width: 100%; flex: 1; min-height: 0; object-fit: contain; display: block; }
+#player-ctrl { flex-shrink: 0; }
 #player-ctrl { display: flex; gap: 4px; align-items: center; flex-wrap: wrap;
                margin-top: 6px; }
 #player-ctrl button { padding: 4px 9px; font-size: 12px; }
 #player-ctrl button.active { background: #89b4fa; color: #1e1e2e; }
 #player-ctrl .sep { width: 1px; height: 18px; background: #45475a; margin: 0 4px; }
 #player-time { font-variant-numeric: tabular-nums; color: #a6adc8; font-size: 12px; }
+#transcript-panel { flex: 1 1 320px; min-width: 0; min-height: 0; background: #181825;
+                    border: 1px solid #313244; border-radius: 6px; display: flex;
+                    flex-direction: column; overflow: hidden; }
+#transcript-head { padding: 7px 10px; color: #89b4fa; font-size: 13px; display: flex;
+                   align-items: center; gap: 8px; border-bottom: 1px solid #313244; }
+#btn-copy-transcript-panel { padding: 3px 8px; font-size: 12px; }
+#transcript-tabs { display: flex; gap: 4px; overflow-x: auto; padding: 6px 7px 0;
+                   border-bottom: 1px solid #313244; }
+#transcript-head, #transcript-tabs { flex-shrink: 0; }
+@media (max-width: 700px) {
+  #player-layout { flex-direction: column; }
+  #player-column, #transcript-panel { flex: 1 1 0; }
+}
+.transcript-tab { flex: 0 0 auto; padding: 4px 8px; font-size: 12px; border-radius: 4px 4px 0 0; }
+.transcript-tab.active { background: #89b4fa; color: #1e1e2e; }
+#transcript-content { flex: 1; overflow: auto; margin: 0; padding: 10px; white-space: pre-wrap;
+                      color: #cdd6f4; font-size: 13px; line-height: 1.6; }
+#transcript-content.empty { color: #6c7086; }
 #log { position: fixed; left: calc(100% - 432px); top: calc(100% - 170px);
        width: 420px; z-index: 15; background: #11111b; border: 1px solid #313244;
        border-radius: 6px; display: none; font-size: 12px; color: #a6adc8;
@@ -139,21 +165,33 @@ body.dragging #drop-hint { display: flex; }
 </main>
 
 <div id="video-wrap">
-  <video id="player" controls></video>
-  <div id="player-ctrl">
-    <span id="player-time">00:00:00 / 00:00:00</span>
-    <span class="sep"></span>
-    <button data-seek="-10">-10s</button>
-    <button data-seek="-5">-5s</button>
-    <button data-seek="-1">-1s</button>
-    <button data-seek="1">+1s</button>
-    <button data-seek="5">+5s</button>
-    <button data-seek="10">+10s</button>
-    <span class="sep"></span>
-    <button data-rate="0.5">0.5×</button>
-    <button data-rate="1" class="active">1×</button>
-    <button data-rate="1.5">1.5×</button>
-    <button data-rate="2">2×</button>
+  <div id="player-resizer" role="separator" aria-label="调整播放器和歌词区域高度"
+       aria-orientation="horizontal" tabindex="0" title="上下拖动调整高度，也可使用上下方向键"></div>
+  <div id="player-layout">
+    <div id="player-column">
+      <video id="player" controls></video>
+      <div id="player-ctrl">
+        <span id="player-time">00:00:00 / 00:00:00</span>
+        <span class="sep"></span>
+        <button data-seek="-10">-10s</button>
+        <button data-seek="-5">-5s</button>
+        <button data-seek="-1">-1s</button>
+        <button data-seek="1">+1s</button>
+        <button data-seek="5">+5s</button>
+        <button data-seek="10">+10s</button>
+        <span class="sep"></span>
+        <button data-rate="0.5">0.5×</button>
+        <button data-rate="1" class="active">1×</button>
+        <button data-rate="1.5">1.5×</button>
+        <button data-rate="2">2×</button>
+      </div>
+    </div>
+    <aside id="transcript-panel">
+      <div id="transcript-head"><span>转写歌词</span><span style="flex:1"></span>
+        <button id="btn-copy-transcript-panel" type="button">复制</button></div>
+      <div id="transcript-tabs"></div>
+      <pre id="transcript-content" class="empty">点击候选段的“转文字”后，识别结果会显示在这里。</pre>
+    </aside>
   </div>
 </div>
 <div id="log">
@@ -167,7 +205,6 @@ body.dragging #drop-hint { display: flex; }
   <div class="modal-box" style="width:640px">
     <div class="modal-head">
       <span id="recognize-head"></span>
-      <button id="btn-copy-transcript" style="display:none">复制文本</button>
       <button id="btn-recognize-close">关闭</button>
     </div>
     <div style="padding:8px 12px; border-bottom:1px solid #313244; color:#a6adc8; font-size:12px"
@@ -194,6 +231,8 @@ const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>'
 
 let currentVideo = localStorage.getItem('amc_video') || '';
 let outDir = '';
+const transcriptTabs = new Map();
+let activeTranscriptKey = '';
 $('video-path').value = currentVideo;
 
 function candidateMatchesFilters(c) {
@@ -216,9 +255,11 @@ async function syncOutDir() {
 
 // 选定视频：记录路径并同步会话目录
 function setVideo(path) {
+  const changed = currentVideo !== path;
   $('video-path').value = path;
   currentVideo = path;
   localStorage.setItem('amc_video', path);
+  if (changed) resetTranscriptTabs();
   syncOutDir();
 }
 
@@ -372,18 +413,76 @@ async function recognizeSegment(start, end, startStr, endStr) {
 
 async function transcribeSegment(start, end, startStr, endStr) {
   if (!currentVideo) { alert('请先填写视频路径'); return; }
-  showRecognizeModal('转文字中…', '正在转写音频，请稍候');
+  const video = currentVideo;
+  const key = `${startStr}-${endStr}`;
+  setTranscriptTab(key, `${startStr} - ${endStr}`, '正在转写音频，请稍候');
   const r = await (await fetch('/api/transcribe', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({video: currentVideo, start, end}),
+    body: JSON.stringify({video, start, end}),
   })).json();
-  if (r.detail) { $('recognize-head').textContent = '转文字失败'; $('recognize-transcript').textContent = r.detail; return; }
+  if (r.detail) {
+    if (currentVideo === video) setTranscriptTab(key, `${startStr} - ${endStr}`, `转文字失败：${r.detail}`);
+    return;
+  }
   await pollTask(r.task_id, result => {
-    $('recognize-head').textContent = `转写文本（${startStr} ~ ${endStr}）`;
-    $('recognize-transcript').textContent = result.transcript || '（未识别出文本）';
-    $('btn-copy-transcript').style.display = 'inline-block';
-  }, err => { $('recognize-head').textContent = '转文字失败'; $('recognize-transcript').textContent = err; });
+    if (currentVideo === video) {
+      setTranscriptTab(key, `${startStr} - ${endStr}`,
+        result.transcript || '（未识别出文本）', activeTranscriptKey === key);
+    }
+  }, err => {
+    if (currentVideo === video) {
+      setTranscriptTab(key, `${startStr} - ${endStr}`, `转文字失败：${err}`,
+        activeTranscriptKey === key);
+    }
+  });
 }
+
+function setTranscriptTab(key, label, text, activate = true) {
+  let item = transcriptTabs.get(key);
+  if (!item) {
+    const button = document.createElement('button');
+    button.className = 'transcript-tab';
+    button.textContent = label;
+    button.onclick = () => selectTranscriptTab(key);
+    $('transcript-tabs').appendChild(button);
+    item = {button, text: ''};
+    transcriptTabs.set(key, item);
+  }
+  item.text = text;
+  if (activate) selectTranscriptTab(key);
+}
+
+function selectTranscriptTab(key) {
+  const item = transcriptTabs.get(key);
+  if (!item) return;
+  activeTranscriptKey = key;
+  transcriptTabs.forEach((tab, tabKey) =>
+    tab.button.classList.toggle('active', tabKey === key));
+  const content = $('transcript-content');
+  content.textContent = item.text;
+  content.classList.toggle('empty', !item.text || item.text.startsWith('（'));
+}
+
+function resetTranscriptTabs() {
+  transcriptTabs.clear();
+  activeTranscriptKey = '';
+  $('transcript-tabs').innerHTML = '';
+  const content = $('transcript-content');
+  content.textContent = '点击候选段的“转文字”后，识别结果会显示在这里。';
+  content.classList.add('empty');
+}
+
+$('btn-copy-transcript-panel').onclick = async () => {
+  const text = $('transcript-content').textContent;
+  if (!activeTranscriptKey || !text || text.startsWith('（')) return;
+  try {
+    await navigator.clipboard.writeText(text);
+    $('btn-copy-transcript-panel').textContent = '已复制';
+    setTimeout(() => $('btn-copy-transcript-panel').textContent = '复制', 1500);
+  } catch (_) {
+    alert('复制失败，请手动选择文本复制');
+  }
+};
 
 async function recognizeAll() {
   if (!currentVideo) { alert('请先填写视频路径'); return; }
@@ -404,22 +503,10 @@ async function recognizeAll() {
 function showRecognizeModal(head, transcript) {
   $('recognize-head').textContent = head;
   $('recognize-transcript').textContent = transcript || '';
-  $('btn-copy-transcript').style.display = 'none';
   $('recognize-list').innerHTML = '';
   $('recognize-modal').style.display = 'flex';
 }
 $('btn-recognize-close').onclick = () => $('recognize-modal').style.display = 'none';
-$('btn-copy-transcript').onclick = async () => {
-  const text = $('recognize-transcript').textContent;
-  if (!text || text.startsWith('（')) return;
-  try {
-    await navigator.clipboard.writeText(text);
-    $('btn-copy-transcript').textContent = '已复制';
-    setTimeout(() => $('btn-copy-transcript').textContent = '复制文本', 1500);
-  } catch (_) {
-    alert('复制失败，请手动选择文本复制');
-  }
-};
 
 function renderRecognizeResult(r, startStr, endStr) {
   $('recognize-head').textContent = `识别结果（${startStr} ~ ${endStr}）`;
@@ -539,8 +626,9 @@ $('btn-analyze').onclick = async () => {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({video}),
   })).json();
-  await pollTask(r.task_id, () => loadCandidates());
+  await pollTask(r.task_id, () => { loadCandidates(); loadSongs(); });
   loadCandidates();
+  loadSongs();
 };
 
 $('btn-cut').onclick = async () => {
@@ -642,11 +730,51 @@ document.addEventListener('drop', async e => {
 
 // ---------- 播放器 ----------
 let playbackRate = 1;   // 记住倍速，切换视频后仍保持
+let playerHeight = 310;
+const playerResizer = $('player-resizer');
+let playerDrag = null;
+
+function resizePlayer(height) {
+  const available = Math.max(0, window.innerHeight - document.querySelector('header').getBoundingClientRect().height);
+  const max = Math.max(0, available - Math.min(120, available / 3));
+  const min = Math.min(window.innerWidth <= 700 ? 300 : 180, max);
+  playerHeight = Math.round(Math.min(max, Math.max(min, height)));
+  $('video-wrap').style.height = `${playerHeight}px`;
+  playerResizer.setAttribute('aria-valuemin', Math.round(min));
+  playerResizer.setAttribute('aria-valuemax', Math.round(max));
+  playerResizer.setAttribute('aria-valuenow', playerHeight);
+}
+
+playerResizer.addEventListener('pointerdown', event => {
+  if (event.button !== 0) return;
+  event.preventDefault();
+  playerDrag = { y: event.clientY, height: playerHeight, id: event.pointerId };
+  playerResizer.setPointerCapture(event.pointerId);
+});
+playerResizer.addEventListener('pointermove', event => {
+  if (!playerDrag || event.pointerId !== playerDrag.id) return;
+  resizePlayer(playerDrag.height + playerDrag.y - event.clientY);
+});
+function stopPlayerResize(event) {
+  if (!playerDrag || event.pointerId !== playerDrag.id) return;
+  playerDrag = null;
+  if (playerResizer.hasPointerCapture(event.pointerId)) playerResizer.releasePointerCapture(event.pointerId);
+}
+playerResizer.addEventListener('pointerup', stopPlayerResize);
+playerResizer.addEventListener('pointercancel', stopPlayerResize);
+playerResizer.addEventListener('lostpointercapture', stopPlayerResize);
+playerResizer.addEventListener('keydown', event => {
+  if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+  event.preventDefault();
+  resizePlayer(playerHeight + (event.key === 'ArrowUp' ? 20 : -20));
+});
+window.addEventListener('resize', () => resizePlayer(playerHeight));
 
 function initPlayer() {
   const show = $('chk-player').checked;
   $('video-wrap').style.display = show && currentVideo ? 'block' : 'none';
   if (!show || !currentVideo) return;
+  resizePlayer(playerHeight);
   const p = $('player');
   const src = `/api/stream?path=${encodeURIComponent(currentVideo)}`;
   // 只在视频变化时重设 src：重复赋值会触发重新缓冲，每次跳转都要等

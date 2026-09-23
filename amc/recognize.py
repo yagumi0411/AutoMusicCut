@@ -196,8 +196,8 @@ def recognition_windows(start, end):
     ]
 
 
-def transcribe_segment(video, start, end, lang="auto", work_dir=None):
-    """转写候选段的一个或多个窗口，返回非空文本列表。"""
+def _transcribe_windows(video, windows, lang="auto", work_dir=None):
+    """转写给定的音频时间窗口，返回非空文本列表。"""
     if work_dir:
         Path(work_dir).mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(
@@ -207,7 +207,7 @@ def transcribe_segment(video, start, end, lang="auto", work_dir=None):
     tmp_wav = Path(tmp_name)
     try:
         texts = []
-        for window_start, window_end in recognition_windows(start, end):
+        for window_start, window_end in windows:
             segment_wav(video, window_start, window_end, tmp_wav)
             text = transcribe(tmp_wav, lang=lang)
             if text:
@@ -215,6 +215,11 @@ def transcribe_segment(video, start, end, lang="auto", work_dir=None):
         return texts
     finally:
         tmp_wav.unlink(missing_ok=True)
+
+
+def transcribe_segment(video, start, end, lang="auto", work_dir=None):
+    """完整转写候选段，返回非空文本列表。"""
+    return _transcribe_windows(video, [(start, end)], lang=lang, work_dir=work_dir)
 
 
 def recognize_segment(video, start, end, lang="auto", work_dir=None):
@@ -226,7 +231,8 @@ def recognize_segment(video, start, end, lang="auto", work_dir=None):
     work_dir: 临时 wav 的存放目录，默认用系统临时目录。此前写在**源视频
     所在目录**，只读目录/网络盘会失败，且同一时间段的并发识别会撞名。
     """
-    texts = transcribe_segment(video, start, end, lang=lang, work_dir=work_dir)
+    texts = _transcribe_windows(
+        video, recognition_windows(start, end), lang=lang, work_dir=work_dir)
     queries = []
     for text in texts:
         for query in build_queries(text):

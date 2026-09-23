@@ -227,6 +227,8 @@ def api_analyze(payload: dict):
     global CURRENT_VIDEO_REQ
     CURRENT_VIDEO_REQ = str(Path(video))
     sess = _session_paths(video)
+    # 新一轮分析会生成新的候选段，旧的最终清单不再适用。
+    _write_songs_text("", video)
     task_id = _new_task()
     log = _task_progress(task_id)
 
