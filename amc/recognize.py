@@ -17,7 +17,6 @@
 """
 
 import difflib
-import os
 import re
 import subprocess
 import tempfile
@@ -35,12 +34,15 @@ CJK_QUERY_WINDOW = 6      # 中日韩文字没有分词边界，使用字符窗�
 SEARCH_TOP_K = 5          # 每次查询取回的候选上限
 RECOGNITION_WINDOW_SEC = 35
 RECOGNITION_SAMPLE_POSITIONS = (0.15, 0.5, 0.85)
+TRANSCRIPTION_MAX_SEC = 30
+TRANSCRIPTION_MIN_SEC = 15
 
 
 # ---- ASR：懒加载单例 ----
 
 _SENSEVOICE = None
 _SENSEVOICE_LOCK = threading.Lock()
+_TRANSCRIBE_LOCK = threading.Lock()
 
 
 def ensure_asr():
@@ -72,12 +74,14 @@ def transcribe(wav_path, lang="auto"):
     只保留歌词本身（否则标签会污染搜索词与相似度比对）。
     """
     model = ensure_asr()
-    res = model.generate(
-        input=str(wav_path),
-        language=lang,      # auto 支持中/英/日/韩/粤自动识别
-        use_itn=True,
-        batch_size_s=60,
-    )
+    # AutoModel.generate 会修改共享配置；避免不同任务的语言参数相互污染。
+    with _TRANSCRIBE_LOCK:
+        res = model.generate(
+            input=str(wav_path),
+            language=lang,      # auto 支持中/英/日/韩/粤自动识别
+            use_itn=False,      # 保留歌词原文字形，不进行数字/日期转换
+            batch_size_s=60,
+        )
     text = ""
     for r in res:
         s = r.get("text") if isinstance(r, dict) else str(r)
@@ -167,12 +171,12 @@ def confidence_of_sim(sim):
     return "低"
 
 
-def segment_wav(video, start, end, out_wav):
-    """截取 [start, end) 秒为 16k 单声道临时 wav（识别用）。"""
+def segment_wav(video, start, end, out_wav, samplerate=16000, channels=1):
+    """截取 [start, end) 秒；人声分离使用 44.1k 立体声，ASR 使用 16k 单声道。"""
     cmd = [
         "ffmpeg", "-y",
-        "-ss", f"{start:.3f}", "-to", f"{end:.3f}", "-i", str(video),
-        "-vn", "-map", "0:a:0", "-ac", "1", "-ar", "16000",
+        "-ss", f"{start:.3f}", "-i", str(video), "-t", f"{end - start:.3f}",
+        "-vn", "-map", "0:a:0", "-ac", str(channels), "-ar", str(samplerate),
         "-f", "wav", str(out_wav),
     ]
     subprocess.run(cmd, check=True, capture_output=True, text=True,
@@ -196,33 +200,75 @@ def recognition_windows(start, end):
     ]
 
 
-def _transcribe_windows(video, windows, lang="auto", work_dir=None):
-    """转写给定的音频时间窗口，返回非空文本列表。"""
+def transcription_chunks(audio, samplerate):
+    """完整覆盖人声；优先在 15~30 秒之间的低能量停顿切分，不丢弃轻声唱歌。"""
+    import numpy as np
+
+    maximum = int(TRANSCRIPTION_MAX_SEC * samplerate)
+    minimum = int(TRANSCRIPTION_MIN_SEC * samplerate)
+    frame = max(1, int(0.02 * samplerate))
+    start = 0
+    while start < len(audio):
+        end = min(start + maximum, len(audio))
+        # 避免末尾仅剩几秒，短到缺少识别上下文。
+        if maximum < len(audio) - start < maximum + minimum:
+            end = start + (len(audio) - start) // 2
+        if end < len(audio):
+            section = audio[start + minimum:end]
+            usable = len(section) // frame * frame
+            if usable:
+                energies = np.mean(np.square(section[:usable].reshape(-1, frame)), axis=1)
+                # 有明显停顿才移动切点；持续唱歌仍按最大时长切分。
+                quiet = np.flatnonzero(
+                    energies <= max(1e-8, float(np.median(energies)) * 0.1))
+                if len(quiet):
+                    end = start + minimum + int(quiet[-1]) * frame + frame // 2
+        yield start, end
+        start = end
+
+
+def _transcribe_windows(video, windows, lang="auto", work_dir=None, progress_cb=None):
+    """先提取人声，再分段转写；返回按时间顺序排列的非空文本列表。"""
+    import soundfile as sf
+    from .vocals import extract_vocals
+
     if work_dir:
         Path(work_dir).mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(
-        prefix=".amc_seg_", suffix=".wav",
-        dir=str(work_dir) if work_dir else None)
-    os.close(fd)
-    tmp_wav = Path(tmp_name)
-    try:
+    with tempfile.TemporaryDirectory(prefix=".amc_seg_", dir=work_dir) as tmp_name:
+        tmp_dir = Path(tmp_name)
+        mix_wav, vocals_wav, chunk_wav = (
+            tmp_dir / name for name in ("mix.wav", "vocals.wav", "chunk.wav"))
         texts = []
         for window_start, window_end in windows:
-            segment_wav(video, window_start, window_end, tmp_wav)
-            text = transcribe(tmp_wav, lang=lang)
-            if text:
-                texts.append(text)
+            segment_wav(video, window_start, window_end, mix_wav,
+                        samplerate=44100, channels=2)
+            extract_vocals(mix_wav, vocals_wav, progress_cb=progress_cb)
+            with sf.SoundFile(vocals_wav) as source:
+                samplerate = source.samplerate
+                cursor = 0
+                lookahead = int((TRANSCRIPTION_MAX_SEC + TRANSCRIPTION_MIN_SEC) * samplerate)
+                while cursor < len(source):
+                    source.seek(cursor)
+                    audio = source.read(lookahead, dtype="float32")
+                    _, count = next(transcription_chunks(audio, samplerate))
+                    sf.write(chunk_wav, audio[:count], samplerate, subtype="FLOAT")
+                    if progress_cb:
+                        progress_cb(f"转写人声 {window_start + cursor / samplerate:.1f}"
+                                    f" ~ {window_start + (cursor + count) / samplerate:.1f} 秒...")
+                    text = transcribe(chunk_wav, lang=lang)
+                    if text:
+                        texts.append(text)
+                    cursor += count
         return texts
-    finally:
-        tmp_wav.unlink(missing_ok=True)
 
 
-def transcribe_segment(video, start, end, lang="auto", work_dir=None):
-    """完整转写候选段，返回非空文本列表。"""
-    return _transcribe_windows(video, [(start, end)], lang=lang, work_dir=work_dir)
+def transcribe_segment(video, start, end, lang="auto", work_dir=None, progress_cb=None):
+    """完整提取候选段人声，按停顿分段转写，返回非空文本列表。"""
+    return _transcribe_windows(video, [(start, end)], lang=lang, work_dir=work_dir,
+                               progress_cb=progress_cb)
 
 
-def recognize_segment(video, start, end, lang="auto", work_dir=None):
+def recognize_segment(video, start, end, lang="auto", work_dir=None, progress_cb=None):
     """识别单个 [start, end) 秒段的歌名。
 
     返回 {"transcript", "query", "candidates": [{title, artist, sim, confidence}]}
@@ -232,7 +278,8 @@ def recognize_segment(video, start, end, lang="auto", work_dir=None):
     所在目录**，只读目录/网络盘会失败，且同一时间段的并发识别会撞名。
     """
     texts = _transcribe_windows(
-        video, recognition_windows(start, end), lang=lang, work_dir=work_dir)
+        video, recognition_windows(start, end), lang=lang, work_dir=work_dir,
+        progress_cb=progress_cb)
     queries = []
     for text in texts:
         for query in build_queries(text):

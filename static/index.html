@@ -2,37 +2,75 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>AutoMusicCut — 唱歌片段剪切</title>
 <style>
+:root { color-scheme: dark; --bg: #1e1e2e; --surface: #181825; --line: #38394d;
+        --text: #cdd6f4; --muted: #a6adc8; --accent: #a6e3a1; }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { font-family: "Segoe UI", "Microsoft YaHei", sans-serif; font-size: 14px;
-       background: #1e1e2e; color: #cdd6f4; display: flex; flex-direction: column;
-       height: 100vh; }
-header { padding: 10px 16px; background: #181825; border-bottom: 1px solid #313244;
-         display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-header h1 { font-size: 16px; margin-right: 12px; color: #f5c2e7; }
+       background: var(--bg); color: var(--text); display: flex; flex-direction: column;
+       height: 100dvh; }
+header { padding: 20px 24px 16px; background: #181825; border-bottom: 1px solid var(--line); }
+.brand-row, .source-row, .panel-heading, .panel-actions { display: flex; align-items: center; gap: 12px; }
+.brand-row { justify-content: space-between; margin-bottom: 18px; }
+header h1 { font-size: 22px; letter-spacing: -.025em; color: #f5c2e7; }
+.brand-copy { display: flex; align-items: baseline; gap: 16px; }
+.subtitle, .panel-note, .source-note { color: var(--muted); font-size: 12px; line-height: 1.7; }
+.workflow { display: flex; gap: 18px; list-style: none; color: var(--muted); font-size: 12px; }
+.workflow li { display: flex; align-items: center; gap: 7px; }
+.workflow span { width: 22px; height: 22px; display: grid; place-items: center; border: 1px solid #585b70; border-radius: 50%; font-variant-numeric: tabular-nums; }
+.source-row { flex-wrap: wrap; }
+.source-field { flex: 1; min-width: 220px; display: flex; align-items: center; gap: 12px; }
+#video-path { flex: 1; min-width: 0; }
+.source-note { margin-top: 9px; }
+.player-toggle { display: flex; align-items: center; gap: 7px; color: var(--muted); cursor: pointer; margin-left: 8px; }
+input[type=checkbox] { accent-color: var(--accent); width: 16px; height: 16px; }
 input[type=text], input[type=number] { background: #313244; color: #cdd6f4;
-         border: 1px solid #45475a; border-radius: 4px; padding: 5px 8px; }
-button { background: #585b70; color: #cdd6f4; border: none; border-radius: 4px;
-         padding: 6px 12px; cursor: pointer; }
+         border: 1px solid #585b70; border-radius: 6px; padding: 8px 10px; font: inherit; }
+input::placeholder { color: #a6adc8; }
+button { background: #45475a; color: #cdd6f4; border: 1px solid transparent; border-radius: 6px;
+         padding: 8px 12px; min-height: 36px; cursor: pointer; font: inherit; font-size: 12px;
+         transition: background .15s ease, border-color .15s ease; white-space: nowrap; }
 button:hover { background: #6c7086; }
+button:active { background: #585b70; }
+button:disabled { opacity: .5; cursor: not-allowed; }
+:focus-visible { outline: 2px solid #89b4fa; outline-offset: 3px; }
+::selection { background: #89b4fa; color: #11111b; }
+input { caret-color: var(--accent); }
+* { scrollbar-width: thin; scrollbar-color: #585b70 #181825; }
 button.primary { background: #a6e3a1; color: #1e1e2e; }
 button.primary:hover { background: #b8eeb2; }
-button.danger { background: #f38ba8; color: #1e1e2e; }
-main { flex: 1; display: flex; gap: 8px; padding: 8px 16px; overflow: hidden; }
-.panel { background: #181825; border: 1px solid #313244; border-radius: 6px;
-         padding: 10px; display: flex; flex-direction: column; overflow: hidden; }
-#panel-cand { flex: 1.2; }
+button.del-row { background: transparent; color: #f38ba8; }
+button.del-row:hover { background: #463040; }
+main { flex: 1; min-height: 0; display: flex; gap: 16px; padding: 20px 24px; overflow: hidden; }
+.panel { background: #181825; border: 1px solid var(--line); border-radius: 12px;
+         display: flex; flex-direction: column; overflow: hidden; min-width: 0; }
+#panel-cand { flex: 1.15; }
 #panel-songs { flex: 1; }
-.panel h2 { font-size: 14px; margin-bottom: 8px; color: #89b4fa; }
-.tbl-wrap { flex: 1; overflow: auto; }
+.panel-heading { justify-content: space-between; padding: 18px 18px 12px; flex-wrap: wrap; }
+.panel h2 { font-size: 16px; font-weight: 600; color: #cdd6f4; }
+.panel-note { margin-top: 4px; }
+.panel-actions { flex-wrap: wrap; padding: 14px 18px; border-top: 1px solid var(--line); }
+.action-spacer { flex: 1; }
+#save-state { color: var(--muted); font-size: 12px; }
+#save-state.dirty { color: #f9e2af; }
+.tbl-wrap { flex: 1; overflow: auto; min-height: 120px; }
 table { width: 100%; border-collapse: collapse; }
-th, td { padding: 4px 8px; text-align: left; border-bottom: 1px solid #313244;
-         white-space: nowrap; }
-th { position: sticky; top: 0; background: #1e1e2e; color: #a6adc8; font-weight: normal; }
+th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid #313244;
+         white-space: nowrap; font-variant-numeric: tabular-nums; }
+th { position: sticky; top: 0; z-index: 1; background: #222233; color: #a6adc8; font-weight: 500; font-size: 12px; }
+td[colspan] { padding: 52px 20px; text-align: center; white-space: normal; color: var(--muted); line-height: 1.9; }
+td[colspan] strong { display: block; font-size: 15px; color: var(--text); font-weight: 500; margin-bottom: 6px; }
+#tbl-songs .in-name { min-width: 140px; }
+#tbl-songs .in-start, #tbl-songs .in-end { width: 98px; font-variant-numeric: tabular-nums; }
+#tbl-cand td:last-child { white-space: normal; min-width: 165px; }
+#tbl-cand td button { margin: 2px 0; padding: 6px 8px; min-height: 32px; }
+#tbl-cand .add-cand { color: #a6e3a1; border-color: #526650; background: transparent; }
+#tbl-cand .add-cand:hover { background: #2e4035; }
 tr.cand { cursor: pointer; }
 tr.cand:hover { background: #313244; }
-tr.selected { background: #45475a; }
+tr.selected { background: #303a4f; }
 td input { width: 100%; min-width: 60px; }
 td.jump { cursor: pointer; }
 td.jump:hover { color: #89b4fa; text-decoration: underline; }
@@ -73,7 +111,7 @@ td.jump:hover { color: #89b4fa; text-decoration: underline; }
 .transcript-tab.active { background: #89b4fa; color: #1e1e2e; }
 #transcript-content { flex: 1; overflow: auto; margin: 0; padding: 10px; white-space: pre-wrap;
                       color: #cdd6f4; font-size: 13px; line-height: 1.6; }
-#transcript-content.empty { color: #6c7086; }
+#transcript-content.empty { color: #a6adc8; }
 #log { position: fixed; left: calc(100% - 432px); top: calc(100% - 170px);
        width: 420px; z-index: 15; background: #11111b; border: 1px solid #313244;
        border-radius: 6px; display: none; font-size: 12px; color: #a6adc8;
@@ -88,51 +126,86 @@ td.jump:hover { color: #89b4fa; text-decoration: underline; }
 #log-body { overflow: auto; max-height: 130px; padding: 6px 10px; }
 .modal { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: none;
          align-items: center; justify-content: center; z-index: 10; }
-.modal-box { background: #1e1e2e; border: 1px solid #45475a; border-radius: 8px;
-             width: 560px; max-height: 70vh; display: flex; flex-direction: column; }
+.modal-box { background: #1e1e2e; border: 1px solid #45475a; border-radius: 12px;
+             width: 560px; max-width: calc(100vw - 32px); max-height: 80dvh; display: flex; flex-direction: column; }
 .modal-head { padding: 8px 12px; display: flex; justify-content: space-between;
               align-items: center; border-bottom: 1px solid #313244; }
 .modal-list { overflow: auto; flex: 1; padding: 4px 0; }
-.modal-list div { padding: 5px 12px; cursor: pointer; display: flex;
-                  justify-content: space-between; }
+.modal-list div { padding: 12px 16px; cursor: pointer; display: flex; gap: 12px;
+                  justify-content: space-between; overflow-wrap: anywhere; }
+#browse-path { overflow-wrap: anywhere; min-width: 0; font-size: 12px; }
 .modal-list div:hover { background: #313244; }
 .dir { color: #89b4fa; }
-.size { color: #6c7086; font-size: 12px; }
+.size { color: #a6adc8; font-size: 12px; flex-shrink: 0; }
 #progress { display: none; margin-left: 8px; color: #f9e2af; font-size: 12px; }
-#candidate-filters { display: flex; align-items: center; gap: 6px; color: #a6adc8; font-size: 12px; }
-#candidate-filters input { width: 72px; padding: 3px 6px; }
+#candidate-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; color: #a6adc8; font-size: 12px;
+                     padding: 0 18px 14px; }
+#candidate-filters label { display: flex; align-items: center; gap: 6px; }
+#candidate-filters input { width: 66px; padding: 6px; }
 #candidate-filter-summary { color: #89b4fa; white-space: nowrap; }
 #btn-clear-candidate-filters { padding: 4px 8px; font-size: 12px; }
 #drop-hint { display: none; position: fixed; inset: 0; z-index: 20; pointer-events: none;
              background: rgba(166,227,161,.12); border: 3px dashed #a6e3a1;
              align-items: center; justify-content: center; font-size: 18px; color: #a6e3a1; }
 body.dragging #drop-hint { display: flex; }
+@media (max-width: 1100px) {
+  .brand-copy { align-items: flex-start; flex-direction: column; gap: 3px; }
+  main { gap: 12px; padding: 16px; }
+  .panel-heading, .panel-actions { padding-left: 14px; padding-right: 14px; }
+}
+@media (max-width: 900px) {
+  body { height: auto; min-height: 100dvh; }
+  header { padding: 18px 16px 14px; }
+  main { flex-direction: column; overflow: visible; flex: none; }
+  .panel { flex: none !important; }
+  .tbl-wrap { max-height: 420px; }
+  #video-wrap { flex-shrink: 0; }
+  #log { width: min(420px, calc(100vw - 24px)); left: auto; right: 12px; top: auto; bottom: 12px; }
+}
+@media (max-width: 600px) {
+  .brand-row { align-items: flex-start; flex-direction: column; gap: 12px; }
+  .workflow { gap: 14px; }
+  .source-field { flex-basis: 100%; }
+  .source-field > label { font-size: 12px; }
+  .source-row { gap: 8px; }
+  .player-toggle { margin-left: auto; font-size: 12px; }
+  main { padding: 12px; }
+  button { min-height: 40px; }
+  .panel-actions { gap: 8px; }
+  .action-spacer { display: none; }
+  #save-state { width: 100%; }
+}
+@media (prefers-reduced-motion: reduce) { button { transition: none; } }
 </style>
 </head>
 <body>
 
 <header>
-  <h1>AutoMusicCut</h1>
-  <input id="video-path" type="text" placeholder="视频路径，如 D:\Tools\AutoMusicCut\data\完整视频.mp4" style="flex:1; min-width:300px">
-  <button id="btn-browse">浏览</button>
-  <button id="btn-analyze" class="primary">分析</button>
-  <span id="progress"></span>
-  <span style="flex:1"></span>
-  <label><input id="chk-player" type="checkbox"> 内嵌播放器</label>
+  <div class="brand-row">
+    <div class="brand-copy"><h1>AutoMusicCut</h1><span class="subtitle">从录播中找到歌曲，试听确认后批量剪切</span></div>
+    <ol class="workflow" aria-label="操作流程"><li><span>1</span>选择视频</li><li><span>2</span>分析与试听</li><li><span>3</span>整理与剪切</li></ol>
+  </div>
+  <div class="source-row">
+    <div class="source-field"><label for="video-path">视频路径</label><input id="video-path" type="text" placeholder="粘贴本地视频路径，或点击浏览选择"></div>
+    <button id="btn-browse">浏览文件</button>
+    <button id="btn-analyze" class="primary">开始分析</button>
+    <label class="player-toggle"><input id="chk-player" type="checkbox"> 内嵌播放器</label>
+  </div>
+  <div class="source-note">支持拖入视频 · 点击候选段起止时间可定位试听<span id="progress" role="status" aria-live="polite"></span></div>
 </header>
 
 <main>
   <div class="panel" id="panel-cand">
-    <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px">
-      <h2 style="margin:0; flex:1">候选唱歌段（点击行跳转试听）</h2>
+    <div class="panel-heading">
+      <div><h2>候选唱歌段</h2><p class="panel-note">试听起止位置，再将需要的片段加入清单</p></div>
+      <button id="btn-recognize-all">全部识别歌名</button>
+    </div>
       <div id="candidate-filters">
         <label>最短 <input id="filter-min-duration" type="number" min="0" step="0.1" placeholder="秒"> 秒</label>
         <label>最低置信度 <input id="filter-min-confidence" type="number" min="0" max="1" step="0.01" placeholder="0–1"></label>
         <span id="candidate-filter-summary">显示 0 / 0 条</span>
         <button id="btn-clear-candidate-filters" type="button">清除过滤</button>
       </div>
-      <button id="btn-recognize-all">全部识别</button>
-    </div>
     <div class="tbl-wrap">
       <table id="tbl-cand">
         <thead><tr>
@@ -144,21 +217,21 @@ body.dragging #drop-hint { display: flex; }
     </div>
   </div>
   <div class="panel" id="panel-songs">
-    <h2>最终清单 songs.txt（可编辑）</h2>
+    <div class="panel-heading"><div><h2>剪切清单</h2><p class="panel-note">可编辑歌名与起止时间，保存到 songs.txt</p></div><span id="save-state" role="status">清单已保存</span></div>
     <div class="tbl-wrap">
       <table id="tbl-songs">
         <thead><tr>
           <th style="width:36px">#</th><th>歌曲名</th><th>开始</th><th>结束</th>
-          <th style="width:60px"></th>
+          <th style="width:60px">操作</th>
         </tr></thead>
         <tbody></tbody>
       </table>
     </div>
-    <div style="display:flex; gap:8px; margin-top:8px">
-      <button id="btn-add-row">＋ 添加行</button>
-      <button id="btn-save-songs" class="primary">保存清单</button>
-      <span style="flex:1"></span>
-      <button id="btn-cut" class="danger">剪切</button>
+    <div class="panel-actions">
+      <button id="btn-add-row">添加片段</button>
+      <button id="btn-save-songs" title="Ctrl+S 保存清单">保存清单</button>
+      <span class="action-spacer"></span>
+      <button id="btn-cut" class="primary">开始剪切</button>
       <button id="btn-open-out">打开输出目录</button>
     </div>
   </div>
@@ -202,7 +275,7 @@ body.dragging #drop-hint { display: flex; }
 <div id="drop-hint">松开鼠标导入视频</div>
 
 <div class="modal" id="recognize-modal">
-  <div class="modal-box" style="width:640px">
+  <div class="modal-box" style="width:640px" role="dialog" aria-modal="true" aria-labelledby="recognize-head">
     <div class="modal-head">
       <span id="recognize-head"></span>
       <button id="btn-recognize-close">关闭</button>
@@ -214,7 +287,7 @@ body.dragging #drop-hint { display: flex; }
 </div>
 
 <div class="modal" id="browse-modal">
-  <div class="modal-box">
+  <div class="modal-box" role="dialog" aria-modal="true" aria-label="选择视频文件">
     <div class="modal-head">
       <span id="browse-path"></span>
       <button id="btn-browse-close">关闭</button>
@@ -231,9 +304,67 @@ const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>'
 
 let currentVideo = localStorage.getItem('amc_video') || '';
 let outDir = '';
+let songRevision = 0;
+let songsDirty = false;
+let songsLoaded = false;
+let videoRevision = 0;
+let videoRequest = 0;
+let candidatesRequest = 0;
+let songsRequest = 0;
+let saveQueue = Promise.resolve();
 const transcriptTabs = new Map();
 let activeTranscriptKey = '';
 $('video-path').value = currentVideo;
+
+function markSongsDirty() {
+  songRevision++;
+  songsDirty = true;
+  $('save-state').textContent = '有未保存的修改';
+  $('save-state').classList.add('dirty');
+}
+function markSongsSaved() {
+  songsDirty = false;
+  $('save-state').textContent = '清单已保存';
+  $('save-state').classList.remove('dirty');
+}
+$('tbl-songs').addEventListener('input', markSongsDirty);
+document.addEventListener('keydown', event => {
+  const modal = Array.from(document.querySelectorAll('.modal')).find(el => el.style.display === 'flex');
+  if (event.key === 'Tab' && modal) {
+    const controls = Array.from(modal.querySelectorAll('button, [tabindex="0"]'));
+    const first = controls[0], last = controls[controls.length - 1];
+    if (event.shiftKey && (document.activeElement === first || !modal.contains(document.activeElement))) {
+      event.preventDefault(); last.focus();
+    } else if (!event.shiftKey && (document.activeElement === last || !modal.contains(document.activeElement))) {
+      event.preventDefault(); first.focus();
+    }
+  }
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
+    event.preventDefault();
+    $('btn-save-songs').click();
+  }
+  if (event.key === 'Escape') {
+    if ($('browse-modal').style.display === 'flex') { closeBrowse(); $('btn-browse').focus(); }
+    else if ($('recognize-modal').style.display === 'flex') {
+      $('recognize-modal').style.display = 'none';
+      $('btn-recognize-all').focus();
+    }
+  }
+});
+window.addEventListener('beforeunload', event => {
+  if (songsDirty) { event.preventDefault(); event.returnValue = ''; }
+});
+
+function makeKeyboardAction(element, label) {
+  element.tabIndex = 0;
+  element.setAttribute('role', 'button');
+  if (label) element.setAttribute('aria-label', label);
+  element.addEventListener('keydown', event => {
+    if (event.target !== element || !['Enter', ' '].includes(event.key)) return;
+    event.preventDefault();
+    element.click();
+  });
+}
 
 function candidateMatchesFilters(c) {
   const minDuration = $('filter-min-duration').valueAsNumber;
@@ -242,26 +373,74 @@ function candidateMatchesFilters(c) {
     (Number.isNaN(minConfidence) || c.score >= minConfidence);
 }
 
-// 输出目录由后端按视频名固定为 work/<视频名>/result，
-// 选定视频时即可确定，不必等剪切完成
-async function syncOutDir() {
-  if (!currentVideo) return;
-  const r = await fetch('/api/select-video', {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({video: currentVideo}),
-  });
-  if (r.ok) outDir = (await r.json()).result;
+async function apiRequest(url, options) {
+  const response = await fetch(url, options);
+  let data;
+  try { data = await response.json(); }
+  catch (_) { throw new Error(`服务返回无效响应（HTTP ${response.status}）`); }
+  if (!response.ok) {
+    const detail = Array.isArray(data.detail) ? data.detail.map(item => item.msg).join('；') : data.detail;
+    throw new Error(detail || `请求失败（HTTP ${response.status}）`);
+  }
+  return data;
 }
 
-// 选定视频：记录路径并同步会话目录
-function setVideo(path) {
-  const changed = currentVideo !== path;
-  $('video-path').value = path;
-  currentVideo = path;
-  localStorage.setItem('amc_video', path);
-  if (changed) resetTranscriptTabs();
-  syncOutDir();
+function reportError(error) {
+  log('操作失败: ' + error.message);
+  $('progress').textContent = '操作失败，请查看日志后重试';
+  $('progress').style.display = 'inline';
 }
+
+// 选定视频后返回会话目录，调用方确认请求仍有效后再更新界面。
+async function syncOutDir(video = currentVideo) {
+  return apiRequest('/api/select-video', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({video}),
+  });
+}
+
+// 切换前保存旧会话；迟到的请求和旧任务结果不能覆盖新会话。
+async function setVideo(path, reload = false) {
+  const request = ++videoRequest;
+  try {
+    if (path !== currentVideo && songsDirty && !(await saveSongs())) {
+      throw new Error('当前清单保存失败，请修正后再切换视频');
+    }
+    if (request !== videoRequest) return false;
+    if (path !== currentVideo && songsDirty) {
+      throw new Error('清单在保存期间发生修改，请保存后再次切换视频');
+    }
+    const session = await syncOutDir(path);
+    if (request !== videoRequest) return false;
+    const video = session.video || path;
+    const changed = currentVideo !== video;
+    if ((changed || reload || !songsLoaded) && songsDirty) {
+      throw new Error('清单有新的未保存修改，请保存后再次切换视频');
+    }
+    currentVideo = video;
+    outDir = session.result;
+    $('video-path').value = video;
+    localStorage.setItem('amc_video', video);
+    if (changed || reload || !songsLoaded) {
+      videoRevision++;
+      songRevision++;
+      songsLoaded = false;
+      $('btn-add-row').disabled = true;
+      resetTranscriptTabs();
+      $('recognize-modal').style.display = 'none';
+      $('tbl-cand').querySelector('tbody').innerHTML = '';
+      $('tbl-songs').querySelector('tbody').innerHTML = '';
+      markSongsSaved();
+      await Promise.all([loadCandidates(video), loadSongs(video)]);
+    }
+    initPlayer();
+    return request === videoRequest;
+  } catch (error) {
+    if (request === videoRequest) $('video-path').value = currentVideo;
+    throw error;
+  }
+}
+$('video-path').addEventListener('change', () => setVideo($('video-path').value.trim()).catch(reportError));
 
 // ---------- 日志 ----------
 function showLog() { $('log').style.display = 'block'; }
@@ -312,13 +491,18 @@ $('log-close').onclick = closeLog;
 
 // ---------- 任务轮询 ----------
 async function pollTask(taskId, onDone, onError) {
+  if (!taskId) throw new Error('未能启动任务，请重试');
+  let seenMessages = [];
   for (;;) {
-    const r = await (await fetch(`/api/task/${taskId}`)).json();
+    const r = await apiRequest(`/api/task/${taskId}`);
     $('progress').style.display = 'block';
     const msgs = r.messages || [];
     if (msgs.length) $('progress').textContent = msgs[msgs.length - 1];
-    msgs.slice(-5).forEach(log);
-    if (r.status === 'done') { $('progress').textContent = '完成'; onDone(r.result); break; }
+    let overlap = Math.min(seenMessages.length, msgs.length);
+    while (overlap && !seenMessages.slice(-overlap).every((msg, i) => msg === msgs[i])) overlap--;
+    msgs.slice(overlap).forEach(log);
+    seenMessages = msgs;
+    if (r.status === 'done') { $('progress').textContent = '完成'; await onDone(r.result); break; }
     if (r.status === 'error') {
       $('progress').textContent = '失败';
       log('错误: ' + r.error);
@@ -331,19 +515,23 @@ async function pollTask(taskId, onDone, onError) {
 }
 
 // ---------- 候选清单 ----------
-async function loadCandidates() {
-  const r = await (await fetch('/api/candidates')).json();
+async function loadCandidates(video = currentVideo) {
+  if (video !== currentVideo) return;
+  const revision = videoRevision, request = ++candidatesRequest;
+  const r = video ? await apiRequest(`/api/candidates?video=${encodeURIComponent(video)}`) :
+    {exists: false, candidates: []};
+  if (video !== currentVideo || revision !== videoRevision || request !== candidatesRequest) return;
   const tb = $('tbl-cand').querySelector('tbody');
   tb.innerHTML = '';
   if (!r.exists || !r.candidates.length) {
     $('candidate-filter-summary').textContent = '显示 0 / 0 条';
-    tb.innerHTML = '<tr><td colspan="8">（暂无候选，先点击"分析"）</td></tr>';
+    tb.innerHTML = '<tr><td colspan="7"><strong>等待分析视频</strong>选择视频后点击“开始分析”，唱歌片段会显示在这里。</td></tr>';
     return;
   }
   const candidates = r.candidates.filter(candidateMatchesFilters);
   $('candidate-filter-summary').textContent = `显示 ${candidates.length} / ${r.candidates.length} 条`;
   if (!candidates.length) {
-    tb.innerHTML = '<tr><td colspan="8">（没有符合当前过滤条件的候选）</td></tr>';
+    tb.innerHTML = '<tr><td colspan="7"><strong>没有符合条件的片段</strong>试试降低最短时长或置信度，或点击“清除过滤”。</td></tr>';
     return;
   }
   for (const c of candidates) {
@@ -358,24 +546,28 @@ async function loadCandidates() {
       <td><button class="recognize-cand">识别</button> <button class="add-cand">＋清单</button> <button class="transcribe-cand">转文字</button></td>`;
     tr.onclick = e => {
       if (e.target.closest('button')) return;
+      tb.querySelectorAll('.selected').forEach(row => row.classList.remove('selected'));
+      tr.classList.add('selected');
       // 点开始/结束单元格跳到各自时间，点行内其他位置默认跳到开始
       const cell = e.target.closest('td.jump');
       jumpTo(cell && cell.dataset.t === 'end' ? c.end : c.start);
     };
-    tr.querySelector('.recognize-cand').onclick = () => recognizeSegment(c.start, c.end, c.start_str, c.end_str);
-    tr.querySelector('.add-cand').onclick = () => addCandidate(c);
-    tr.querySelector('.transcribe-cand').onclick = () => transcribeSegment(c.start, c.end, c.start_str, c.end_str);
+    tr.querySelectorAll('td.jump').forEach(cell => makeKeyboardAction(cell,
+      `试听第 ${c.index} 段${cell.dataset.t === 'end' ? '结束' : '开始'}位置 ${cell.textContent}`));
+    tr.querySelector('.recognize-cand').onclick = () => recognizeSegment(c.start, c.end, c.start_str, c.end_str).catch(reportError);
+    tr.querySelector('.add-cand').onclick = () => addCandidate(c).catch(reportError);
+    tr.querySelector('.transcribe-cand').onclick = () => transcribeSegment(c.start, c.end, c.start_str, c.end_str).catch(reportError);
     tb.appendChild(tr);
   }
 }
 
 ['filter-min-duration', 'filter-min-confidence'].forEach(id => {
-  $(id).addEventListener('input', loadCandidates);
+  $(id).addEventListener('input', () => loadCandidates().catch(reportError));
 });
 $('btn-clear-candidate-filters').onclick = () => {
   $('filter-min-duration').value = '';
   $('filter-min-confidence').value = '';
-  loadCandidates();
+  loadCandidates().catch(reportError);
 };
 
 // 往最终清单追加一条并落盘。
@@ -383,12 +575,14 @@ $('btn-clear-candidate-filters').onclick = () => {
 // 会把表格里已删除但尚未保存的行一起带回来，导致条目越加越多。
 // 直接改表格再整体保存，表格始终是唯一事实来源。
 async function appendSongRow(name, startStr, endStr) {
+  if (!songsLoaded) throw new Error('清单尚未加载成功，请重新选择视频后重试');
   const tb = $('tbl-songs').querySelector('tbody');
   if (tb.querySelector('td[colspan]')) tb.innerHTML = '';   // 清掉"空清单"占位行
   const no = tb.children.length + 1;
   tb.appendChild(songRow(no, {
     name: name || `歌曲${no}`, start_str: startStr, end_str: endStr,
   }));
+  markSongsDirty();
   return saveSongs();
 }
 
@@ -401,36 +595,35 @@ async function addCandidate(c) {
 // ---------- 歌名识别 ----------
 async function recognizeSegment(start, end, startStr, endStr) {
   if (!currentVideo) { alert('请先填写视频路径'); return; }
+  const video = currentVideo, revision = videoRevision;
   showRecognizeModal('识别中…', '正在转写歌词，请稍候');
-  const r = await (await fetch('/api/recognize', {
+  const r = await apiRequest('/api/recognize', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({video: currentVideo, start, end}),
-  })).json();
+    body: JSON.stringify({video, start, end}),
+  });
   await pollTask(r.task_id,
-    result => renderRecognizeResult(result, startStr, endStr),
-    err => { $('recognize-head').textContent = '识别失败'; $('recognize-transcript').textContent = err; });
+    result => { if (video === currentVideo && revision === videoRevision) renderRecognizeResult(result, startStr, endStr); },
+    err => { if (video === currentVideo && revision === videoRevision) {
+      $('recognize-head').textContent = '识别失败'; $('recognize-transcript').textContent = err;
+    } });
 }
 
 async function transcribeSegment(start, end, startStr, endStr) {
   if (!currentVideo) { alert('请先填写视频路径'); return; }
-  const video = currentVideo;
+  const video = currentVideo, revision = videoRevision;
   const key = `${startStr}-${endStr}`;
   setTranscriptTab(key, `${startStr} - ${endStr}`, '正在转写音频，请稍候');
-  const r = await (await fetch('/api/transcribe', {
+  const r = await apiRequest('/api/transcribe', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({video, start, end}),
-  })).json();
-  if (r.detail) {
-    if (currentVideo === video) setTranscriptTab(key, `${startStr} - ${endStr}`, `转文字失败：${r.detail}`);
-    return;
-  }
+  });
   await pollTask(r.task_id, result => {
-    if (currentVideo === video) {
+    if (currentVideo === video && revision === videoRevision) {
       setTranscriptTab(key, `${startStr} - ${endStr}`,
         result.transcript || '（未识别出文本）', activeTranscriptKey === key);
     }
   }, err => {
-    if (currentVideo === video) {
+    if (currentVideo === video && revision === videoRevision) {
       setTranscriptTab(key, `${startStr} - ${endStr}`, `转文字失败：${err}`,
         activeTranscriptKey === key);
     }
@@ -486,18 +679,21 @@ $('btn-copy-transcript-panel').onclick = async () => {
 
 async function recognizeAll() {
   if (!currentVideo) { alert('请先填写视频路径'); return; }
-  const c = await (await fetch('/api/candidates')).json();
+  const video = currentVideo, revision = videoRevision;
+  const c = await apiRequest(`/api/candidates?video=${encodeURIComponent(video)}`);
+  if (video !== currentVideo || revision !== videoRevision) return;
   if (!c.exists || !c.candidates.length) {
     alert('候选清单为空，请先点击分析'); return;
   }
   if (!confirm(`对 ${c.candidates.length} 个候选段逐段识别歌名？\n（长片段会抽取多个窗口转写，首次会下载模型，每段需数秒~数十秒）`)) return;
   showRecognizeModal('全部识别中…', '正在逐段转写歌词，请稍候');
-  const r = await (await fetch('/api/recognize-all', {
+  const r = await apiRequest('/api/recognize-all', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({video: currentVideo}),
-  })).json();
-  if (r.detail) { showRecognizeModal('全部识别', '错误: ' + r.detail); return; }
-  await pollTask(r.task_id, result => renderRecognizeAllResults(result));
+    body: JSON.stringify({video}),
+  });
+  await pollTask(r.task_id, result => {
+    if (video === currentVideo && revision === videoRevision) renderRecognizeAllResults(result);
+  });
 }
 
 function showRecognizeModal(head, transcript) {
@@ -505,6 +701,7 @@ function showRecognizeModal(head, transcript) {
   $('recognize-transcript').textContent = transcript || '';
   $('recognize-list').innerHTML = '';
   $('recognize-modal').style.display = 'flex';
+  $('btn-recognize-close').focus();
 }
 $('btn-recognize-close').onclick = () => $('recognize-modal').style.display = 'none';
 
@@ -519,12 +716,13 @@ function renderRecognizeResult(r, startStr, endStr) {
   }
   r.candidates.forEach(c => {
     const div = document.createElement('div');
-    div.innerHTML = `<span>🎵 ${esc(c.title)} — ${esc(c.artist)}</span>
+    div.innerHTML = `<span>${esc(c.title)} — ${esc(c.artist)}</span>
       <span class="size">${c.confidence} 置信 ${(c.sim * 100).toFixed(0)}%</span>`;
     div.onclick = () => {
-      fillSongName(startStr, endStr, c.title);
+      fillSongName(startStr, endStr, c.title).catch(reportError);
       $('recognize-modal').style.display = 'none';
     };
+    makeKeyboardAction(div);
     list.appendChild(div);
   });
 }
@@ -547,11 +745,12 @@ function renderRecognizeAllResults(r) {
     }
     res.candidates.slice(0, 2).forEach(c => {
       const div = document.createElement('div');
-      div.innerHTML = `<span>🎵 ${esc(c.title)} — ${esc(c.artist)}</span>
+      div.innerHTML = `<span>${esc(c.title)} — ${esc(c.artist)}</span>
         <span class="size">${c.confidence} ${(c.sim * 100).toFixed(0)}%</span>`;
       div.onclick = () => {
-        fillSongName(res.start_str, res.end_str, c.title);
+        fillSongName(res.start_str, res.end_str, c.title).catch(reportError);
       };
+      makeKeyboardAction(div);
       list.appendChild(div);
     });
   });
@@ -566,25 +765,33 @@ async function fillSongName(startStr, endStr, title) {
 $('btn-recognize-all').onclick = recognizeAll;
 
 // ---------- 最终清单 ----------
-async function loadSongs() {
-  const r = await (await fetch('/api/songs')).json();
+async function loadSongs(video = currentVideo) {
+  if (video !== currentVideo) return;
+  const revision = videoRevision, editRevision = songRevision, request = ++songsRequest;
+  const r = video ? await apiRequest(`/api/songs?video=${encodeURIComponent(video)}`) : {songs: []};
+  if (video !== currentVideo || revision !== videoRevision || editRevision !== songRevision || request !== songsRequest) return;
   const tb = $('tbl-songs').querySelector('tbody');
   tb.innerHTML = '';
   r.songs.forEach((s, i) => tb.appendChild(songRow(i + 1, s)));
-  if (!r.songs.length) tb.innerHTML = '<tr><td colspan="5">（空，从候选清单添加或手动填写）</td></tr>';
+  if (!r.songs.length) tb.innerHTML = '<tr><td colspan="5"><strong>还没有待剪切的歌曲</strong>从左侧候选段加入清单，或点击“添加片段”手动填写。</td></tr>';
+  songsLoaded = true;
+  $('btn-add-row').disabled = false;
+  markSongsSaved();
 }
 
 function songRow(no, s) {
   const tr = document.createElement('tr');
   tr.innerHTML = `<td>${no}</td>
-    <td><input class="in-name" value="${esc(s.name)}"></td>
-    <td><input class="in-start" value="${s.start_str}"></td>
-    <td><input class="in-end" value="${s.end_str}"></td>
-    <td><button class="del-row">删除</button></td>`;
+    <td><input class="in-name" aria-label="第 ${no} 段歌曲名" placeholder="填写歌曲名" value="${esc(s.name)}"></td>
+    <td><input class="in-start" aria-label="第 ${no} 段开始时间" value="${esc(s.start_str)}"></td>
+    <td><input class="in-end" aria-label="第 ${no} 段结束时间" value="${esc(s.end_str)}"></td>
+    <td><button class="del-row" aria-label="删除第 ${no} 段">删除</button></td>`;
   // 删除后立即落盘并重排，否则刷新或下次添加时被删的行会回来
   tr.querySelector('.del-row').onclick = async () => {
+    const video = currentVideo;
     tr.remove();
-    if (await saveSongs()) loadSongs();
+    markSongsDirty();
+    if (await saveSongs() && !songsDirty) loadSongs(video).catch(reportError);
   };
   return tr;
 }
@@ -594,9 +801,14 @@ $('btn-add-row').onclick = () => {
   if (tb.querySelector('td[colspan]')) tb.innerHTML = '';
   tb.appendChild(songRow(tb.children.length + 1,
       {name: '', start_str: '00:00:00', end_str: '00:00:00'}));
+  markSongsDirty();
+  tb.lastElementChild.querySelector('.in-name').focus();
 };
 
 async function saveSongs() {
+  const video = currentVideo, revision = songRevision, sessionRevision = videoRevision;
+  if (!video) { log('请先选择视频后保存清单'); return false; }
+  if (!songsLoaded) { log('清单尚未加载成功，请重新选择视频后重试'); return false; }
   const songs = [];
   document.querySelectorAll('#tbl-songs tbody tr').forEach(tr => {
     if (tr.querySelector('td[colspan]')) return;
@@ -606,44 +818,55 @@ async function saveSongs() {
       end_str: tr.querySelector('.in-end').value.trim(),
     });
   });
-  const r = await fetch('/api/songs', {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({songs}),
+  saveQueue = saveQueue.then(async () => {
+    await apiRequest('/api/songs', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({video, songs}),
+    });
+    if (video === currentVideo && sessionRevision === videoRevision && revision === songRevision) markSongsSaved();
+    log(`清单已保存（${songs.length} 条）`);
+    return true;
+  }).catch(error => {
+    if (video === currentVideo && sessionRevision === videoRevision) {
+      $('save-state').textContent = '保存失败，请检查清单后重试';
+    }
+    reportError(error);
+    return false;
   });
-  if (r.ok) { log(`清单已保存（${songs.length} 条）`); return true; }
-  log('保存失败: ' + (await r.json()).detail);
-  return false;
+  return saveQueue;
 }
 $('btn-save-songs').onclick = saveSongs;
 
 // ---------- 分析 / 剪切 ----------
 $('btn-analyze').onclick = async () => {
-  const video = $('video-path').value.trim();
-  if (!video) { alert('请先填写视频路径'); return; }
-  setVideo(video);
+  const path = $('video-path').value.trim();
+  if (!path) { alert('请先填写视频路径'); return; }
+  if (!(await setVideo(path))) return;
+  const video = currentVideo, revision = videoRevision;
   log('开始分析: ' + video);
-  const r = await (await fetch('/api/analyze', {
+  const r = await apiRequest('/api/analyze', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({video}),
-  })).json();
-  await pollTask(r.task_id, () => { loadCandidates(); loadSongs(); });
-  loadCandidates();
-  loadSongs();
+  });
+  await pollTask(r.task_id, () => {
+    if (video === currentVideo && revision === videoRevision) return loadCandidates(video);
+  });
 };
 
 $('btn-cut').onclick = async () => {
   if (!currentVideo) { alert('请先填写视频路径'); return; }
+  const video = currentVideo, revision = videoRevision;
   if (!(await saveSongs())) {
     alert('清单保存失败，已中止剪切。请检查清单内容（歌名/时间格式）或磁盘空间后重试。');
     return;
   }
-  log('开始剪切: ' + currentVideo);
-  const r = await (await fetch('/api/cut', {
+  log('开始剪切: ' + video);
+  const r = await apiRequest('/api/cut', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({video: currentVideo}),
-  })).json();
+    body: JSON.stringify({video}),
+  });
   await pollTask(r.task_id, result => {
-    outDir = result.out_dir;
+    if (video === currentVideo && revision === videoRevision) outDir = result.out_dir;
     log(`剪切完成，输出 ${result.items.length} 段:`);
     result.items.forEach(it => log(`  ${it.file}（${it.actual_str}）`));
   });
@@ -656,7 +879,13 @@ $('btn-open-out').onclick = async () => {
 
 // ---------- 目录浏览 ----------
 async function browse(path) {
-  const r = await (await fetch(`/api/browse?path=${encodeURIComponent(path || '')}`)).json();
+  const response = await fetch(`/api/browse?path=${encodeURIComponent(path || '')}`);
+  const r = await response.json();
+  if (!response.ok) {
+    $('browse-path').textContent = '无法打开路径';
+    $('browse-list').textContent = (r.detail || '读取目录失败') + '。请关闭后填写目录路径重试。';
+    return;
+  }
   $('browse-path').textContent = r.path;
   const list = $('browse-list');
   list.innerHTML = '';
@@ -664,15 +893,14 @@ async function browse(path) {
     const div = document.createElement('div');
     div.innerHTML = `<span>${icon} ${esc(name)}</span><span class="size">${info || ''}</span>`;
     div.onclick = onClick;
+    makeKeyboardAction(div);
     list.appendChild(div);
   };
-  if (r.parent) mk('📁', '..', '', () => browse(r.parent));
+  if (r.parent) mk('', '返回上级目录', '', () => browse(r.parent));
   for (const e of r.entries) {
-    if (e.is_dir) mk('📁', e.name, '', () => browse(e.path));
-    else if (e.is_video) mk('🎬', e.name, fmtSize(e.size), () => {
-      setVideo(e.path);
-      closeBrowse();
-      initPlayer();
+    if (e.is_dir) mk('', e.name, '文件夹', () => browse(e.path));
+    else if (e.is_video) mk('', e.name, fmtSize(e.size), () => {
+      setVideo(e.path).then(selected => { if (selected) closeBrowse(); }).catch(reportError);
     });
   }
 }
@@ -686,6 +914,7 @@ function closeBrowse() { $('browse-modal').style.display = 'none'; }
 $('btn-browse').onclick = () => {
   $('browse-modal').style.display = 'flex';
   browse($('video-path').value || '');
+  $('btn-browse-close').focus();
 };
 $('btn-browse-close').onclick = closeBrowse;
 
@@ -723,9 +952,9 @@ document.addEventListener('drop', async e => {
   });
   if (!r.ok) { alert('未在常用目录找到该文件，请用「浏览」手动选择'); return; }
   const {path} = await r.json();
-  setVideo(path);
-  log(`已导入视频: ${path}`);
-  initPlayer();
+  try {
+    if (await setVideo(path)) log(`已导入视频: ${path}`);
+  } catch (error) { reportError(error); }
 });
 
 // ---------- 播放器 ----------
@@ -832,10 +1061,28 @@ function jumpTo(sec) {
 }
 
 // ---------- 初始加载 ----------
-loadCandidates();
-loadSongs();
-initPlayer();
-syncOutDir();
+// 长任务显示忙碌状态，避免重复点击启动多个分析或剪切任务。
+['btn-analyze', 'btn-cut', 'btn-save-songs', 'btn-recognize-all'].forEach(id => {
+  const button = $(id), action = button.onclick;
+  button.onclick = async () => {
+    const label = button.textContent;
+    button.disabled = true;
+    button.textContent = id === 'btn-save-songs' ? '保存中…' : '处理中…';
+    button.setAttribute('aria-busy', 'true');
+    try { await action(); }
+    catch (error) { reportError(error); } finally {
+      button.disabled = false;
+      button.textContent = label;
+      button.removeAttribute('aria-busy');
+    }
+  };
+});
+if (currentVideo) setVideo(currentVideo, true).catch(reportError);
+else {
+  loadCandidates().catch(reportError);
+  loadSongs().catch(reportError);
+  initPlayer();
+}
 </script>
 </body>
 </html>

@@ -18,12 +18,12 @@ def parse_time(text):
         h, m, sec = int(s[:2]), int(s[2:4]), int(s[4:6])
     else:
         parts = s.split(":")
+        if len(parts) not in (2, 3) or not all(re.fullmatch(r"\d+", p) for p in parts):
+            raise ValueError(f"无法解析时间: {s!r}（支持 005841 或 00:58:41 或 58:41）")
         if len(parts) == 3:
             h, m, sec = map(int, parts)
-        elif len(parts) == 2:
-            h, m, sec = 0, int(parts[0]), int(parts[1])
         else:
-            raise ValueError(f"无法解析时间: {s!r}（支持 005841 或 00:58:41 或 58:41）")
+            h, m, sec = 0, int(parts[0]), int(parts[1])
     if not (0 <= m < 60 and 0 <= sec < 60):
         raise ValueError(f"时间非法: {s!r}")
     return h * 3600 + m * 60 + sec

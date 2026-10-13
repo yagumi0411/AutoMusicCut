@@ -1,5 +1,6 @@
 """按最终清单批量无损剪切唱歌片段。"""
 
+import math
 import re
 import shutil
 import subprocess
@@ -59,11 +60,12 @@ def sanitize_filename(name):
     return s
 
 
-def parse_songlist(path):
+def parse_songlist(path, allow_empty=False):
     """解析最终清单 songs.txt。
 
     条目之间以空行分隔，每个条目 3 行：歌曲名、开始、结束。
     # 开头的行视为注释忽略。返回 [(歌名, 开始秒, 结束秒)]。
+    allow_empty: Web 编辑器允许空清单；CLI 默认将空清单视为错误。
     """
     text = Path(path).read_text(encoding="utf-8")
     entries, block = [], []
@@ -90,9 +92,16 @@ def parse_songlist(path):
         if e <= s:
             raise ValueError(f"结束时间早于开始时间: {name!r} ({t_start} ~ {t_end})")
         songs.append((name, s, e))
-    if not songs:
+    if not songs and not allow_empty:
         raise ValueError("清单为空，未找到任何条目")
     return songs
+
+
+def validate_cut_parameters(pad, min_duration):
+    for name, value in (("pad", pad), ("min_duration", min_duration)):
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or \
+                not math.isfinite(value) or value < 0:
+            raise ValueError(f"{name} 必须是大于或等于 0 的有限数值")
 
 
 def video_duration(video):
@@ -136,10 +145,16 @@ def cut(video, songlist_path, out_dir="output", pad=1.5, min_duration=0.0,
         if progress_cb:
             progress_cb(msg)
 
+    validate_cut_parameters(pad, min_duration)
     ensure_ffmpeg()
     video = Path(video)
     songs = parse_songlist(songlist_path)
     duration = video_duration(video)
+    if not math.isfinite(duration) or duration <= 0:
+        raise ValueError("视频时长无效")
+    for name, s, e in songs:
+        if not 0 <= s < duration:
+            raise ValueError(f"{name!r} 开始时间必须位于视频时长范围内")
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -159,16 +174,23 @@ def cut(video, songlist_path, out_dir="output", pad=1.5, min_duration=0.0,
         log(f"  跳过: {name!r} 时长 {format_time(d)} < {min_duration}s")
 
     report = []
-    name_counts = {}
+    safe_names = [sanitize_filename(name) or f"歌曲{i}"
+                  for i, (name, _, _) in enumerate(songs, 1)]
+    reserved_names = {f"{name}.mp4".casefold() for name in safe_names}
+    used_names = set()
     total = len(songs)
     for i, (name, s, e) in enumerate(songs, 1):
         if e > duration:
             log(f"[{i:02d}] 警告: {name!r} 结束时间 {format_time(e)} 超出视频时长，已截断")
-        safe_name = sanitize_filename(name) or f"歌曲{i}"
-        name_key = safe_name.casefold()
-        name_counts[name_key] = name_counts.get(name_key, 0) + 1
-        suffix = "" if name_counts[name_key] == 1 else str(name_counts[name_key])
-        out_path = out_dir / f"{safe_name}{suffix}.mp4"
+        safe_name = safe_names[i - 1]
+        filename = f"{safe_name}.mp4"
+        if filename.casefold() in used_names:
+            number = 2
+            while f"{safe_name}{number}.mp4".casefold() in reserved_names | used_names:
+                number += 1
+            filename = f"{safe_name}{number}.mp4"
+        used_names.add(filename.casefold())
+        out_path = out_dir / filename
         if out_path.exists() and not overwrite:
             log(f"[{i}/{total}] 已存在，跳过: {out_path.name}（加 --overwrite 可覆盖）")
             report.append({"name": name, "out": out_path, "requested": (s, e),

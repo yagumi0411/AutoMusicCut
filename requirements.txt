@@ -6,3 +6,5 @@ fastapi
 uvicorn
 funasr
 httpx
+demucs
+scipy

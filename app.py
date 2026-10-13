@@ -7,10 +7,10 @@ API 一览:
   GET  /api/browse?path=xxx       浏览目录（选视频）
   POST /api/analyze               启动检测任务（后台线程 + 轮询进度）
   GET  /api/task/{id}             查询任务状态
-  GET  /api/candidates            读取候选清单
-  POST /api/candidates/add        把候选段加入最终清单
-  GET  /api/songs                 读取最终清单
-  POST /api/songs                 保存最终清单
+  GET  /api/candidates?video=xxx  读取指定视频的候选清单
+  POST /api/candidates/add        把候选段加入最终清单（请求体含 video）
+  GET  /api/songs?video=xxx       读取指定视频的最终清单
+  POST /api/songs                 保存最终清单（请求体含 video）
   POST /api/recognize             识别单个时间段的歌名（后台线程）
   POST /api/recognize-all         依次识别全部候选段歌名（后台线程）
   POST /api/cut                   按最终清单剪切（后台线程）
@@ -19,6 +19,7 @@ API 一览:
 """
 
 import hashlib
+import math
 import os
 import re
 import threading
@@ -31,13 +32,14 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from amc.cut import cut as do_cut
-from amc.cut import parse_songlist, sanitize_filename
+from amc.cut import parse_songlist, sanitize_filename, validate_cut_parameters, video_duration
 from amc.detect import (
     MERGE_GAP,
     WIN_FRAC_MIN,
     WIN_SEC,
     WIN_THRESH,
     detect,
+    validate_detection_parameters,
 )
 from amc.recognize import recognize_segment, transcribe_segment
 from amc.timefmt import format_time, parse_time
@@ -113,7 +115,7 @@ def _task_progress(task_id):
 
 
 # ---- 会话目录：每个视频一个子文件夹 ----
-CURRENT_VIDEO_REQ = None            # 前端最近一次「选视频/分析」的请求锁（并发保护）
+CURRENT_VIDEO_REQ = None            # 最近选择的视频；清单 API 必须显式传入 video
 
 
 def _session_dir(video):
@@ -181,6 +183,74 @@ def _current_songs_path(video=""):
     return sess["songs"] if sess else ROOT / "songs.txt"
 
 
+def _require_video(video):
+    if not isinstance(video, str) or not video.strip():
+        raise HTTPException(400, "请指定视频路径")
+    try:
+        path = Path(video.strip()).resolve()
+        if not path.is_file():
+            raise ValueError("视频路径无效")
+    except (OSError, ValueError):
+        raise HTTPException(400, "视频路径无效")
+    return str(path)
+
+
+def _checked_video_duration(video):
+    try:
+        duration = video_duration(video)
+        if not math.isfinite(duration) or duration <= 0:
+            raise ValueError("视频时长无效")
+    except (OSError, RuntimeError, ValueError) as e:
+        raise HTTPException(400, f"无法读取视频时长: {e}")
+    return duration
+
+
+def _validate_segment(start, end, duration):
+    try:
+        valid = math.isfinite(start) and math.isfinite(end) and 0 <= start < end
+    except OverflowError:
+        valid = False
+    if not valid:
+        raise HTTPException(400, "时间段非法：需要 0 <= 开始 < 结束，且时间必须为有限数值")
+    # 清单时间以整秒表示，允许视频尾部四舍五入产生的不足一秒误差。
+    if start >= duration or end > math.ceil(duration):
+        raise HTTPException(400, f"时间段超出视频时长 {format_time(duration)}")
+
+
+def _segment_payload(payload, video):
+    try:
+        if isinstance(payload.get("start"), bool) or isinstance(payload.get("end"), bool):
+            raise ValueError
+        start, end = float(payload["start"]), float(payload["end"])
+    except (KeyError, TypeError, ValueError, OverflowError):
+        raise HTTPException(400, "start/end 必须是秒数")
+    _validate_segment(start, end, _checked_video_duration(video))
+    return start, end
+
+
+def _song_blocks(items, duration, default_names=False):
+    if not isinstance(items, list):
+        raise HTTPException(400, "清单必须是数组")
+    blocks = []
+    for i, item in enumerate(items, 1):
+        if not isinstance(item, dict):
+            raise HTTPException(400, f"第 {i} 条必须是歌曲条目")
+        name = item.get("name", "")
+        if not isinstance(name, str):
+            raise HTTPException(400, f"第 {i} 条歌曲名必须是文本")
+        name = name.strip() or (f"歌曲{i}" if default_names else "")
+        if not name or name.startswith("#") or "\n" in name or "\r" in name:
+            raise HTTPException(400, f"第 {i} 条歌曲名不能为空，且不能以 # 开头或包含换行")
+        try:
+            start = parse_time(item.get("start_str"))
+            end = parse_time(item.get("end_str"))
+        except (TypeError, ValueError) as e:
+            raise HTTPException(400, f"第 {i} 条时间格式错误: {e}")
+        _validate_segment(start, end, duration)
+        blocks.append(f"{name}\n{format_time(start)}\n{format_time(end)}")
+    return blocks
+
+
 # ---- 目录浏览 ----
 
 @app.get("/api/browse")
@@ -221,14 +291,17 @@ def get_task(task_id: str):
 
 @app.post("/api/analyze")
 def api_analyze(payload: dict):
-    video = payload.get("video", "")
-    if not video or not Path(video).is_file():
-        raise HTTPException(400, "视频路径无效")
-    global CURRENT_VIDEO_REQ
-    CURRENT_VIDEO_REQ = str(Path(video))
+    video = _require_video(payload.get("video"))
+    try:
+        validate_detection_parameters(
+            payload.get("min_duration", 15.0), payload.get("win_sec", WIN_SEC),
+            payload.get("win_thresh", WIN_THRESH), payload.get("merge_gap", MERGE_GAP),
+            payload.get("win_frac_min", WIN_FRAC_MIN))
+    except (ValueError, OverflowError) as e:
+        raise HTTPException(400, str(e))
+    if payload.get("device", "cpu") not in ("cpu", "cuda"):
+        raise HTTPException(400, "device 必须是 cpu 或 cuda")
     sess = _session_paths(video)
-    # 新一轮分析会生成新的候选段，旧的最终清单不再适用。
-    _write_songs_text("", video)
     task_id = _new_task()
     log = _task_progress(task_id)
 
@@ -283,25 +356,29 @@ def _parse_candidates_file(path):
 
 
 @app.get("/api/candidates")
-def api_candidates(video: str = Query(default="")):
+def api_candidates(video: str = Query(...)):
+    video = _require_video(video)
     path = _current_candidates_path(video)
-    return {"exists": path.exists(), "candidates": _parse_candidates_file(path)}
+    try:
+        return {"exists": path.exists(), "candidates": _parse_candidates_file(path)}
+    except ValueError as e:
+        raise HTTPException(400, f"候选清单格式错误: {e}")
 
 
 @app.post("/api/candidates/add")
 def api_candidates_add(payload: dict):
     """把候选段加入 songs.txt（歌名可留空）。"""
-    songs_path = _current_songs_path()
-    if songs_path.exists():
-        text = songs_path.read_text(encoding="utf-8").rstrip("\n")
-        blocks = text.split("\n\n") if text else []
-    else:
-        blocks = []
-    for item in payload.get("candidates", []):
-        name = (item.get("name") or "").strip() or f"歌曲{len(blocks) + 1}"
-        blocks.append(f"{name}\n{item['start_str']}\n{item['end_str']}")
-    _write_songs_text("\n\n".join(blocks) + "\n")
-    return {"count": len(payload.get("candidates", []))}
+    video = _require_video(payload.get("video"))
+    items = payload.get("candidates")
+    if not isinstance(items, list):
+        raise HTTPException(400, "candidates 必须是数组")
+    try:
+        songs = _load_songs(video)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    blocks = _song_blocks(songs + items, _checked_video_duration(video), default_names=True)
+    _write_songs_text("\n\n".join(blocks) + ("\n" if blocks else ""), video)
+    return {"count": len(items)}
 
 
 # ---- 最终清单 ----
@@ -321,28 +398,24 @@ def _load_songs(video=""):
         return []
     return [{"name": n, "start": s, "start_str": format_time(s),
              "end": e, "end_str": format_time(e), "duration": e - s}
-            for n, s, e in parse_songlist(songs_path)]
+            for n, s, e in parse_songlist(songs_path, allow_empty=True)]
 
 
 @app.get("/api/songs")
-def api_songs():
-    return {"songs": _load_songs()}
+def api_songs(video: str = Query(...)):
+    video = _require_video(video)
+    try:
+        return {"songs": _load_songs(video)}
+    except ValueError as e:
+        raise HTTPException(400, f"清单格式错误: {e}")
 
 
 @app.post("/api/songs")
 def api_songs_save(payload: dict):
     """保存最终清单（前端表格编辑后的完整列表）。"""
-    blocks = []
-    for i, item in enumerate(payload.get("songs", [])):
-        name = (item.get("name") or "").strip()
-        if not name:
-            raise HTTPException(400, f"第 {i + 1} 条缺少歌曲名")
-        s = parse_time(item.get("start_str"))
-        e = parse_time(item.get("end_str"))
-        if e <= s:
-            raise HTTPException(400, f"{name!r} 结束时间早于开始时间")
-        blocks.append(f"{name}\n{format_time(s)}\n{format_time(e)}")
-    _write_songs_text("\n\n".join(blocks) + ("\n" if blocks else ""))
+    video = _require_video(payload.get("video"))
+    blocks = _song_blocks(payload.get("songs"), _checked_video_duration(video))
+    _write_songs_text("\n\n".join(blocks) + ("\n" if blocks else ""), video)
     return {"count": len(blocks)}
 
 
@@ -351,16 +424,8 @@ def api_songs_save(payload: dict):
 @app.post("/api/recognize")
 def api_recognize(payload: dict):
     """识别一个时间段 [start, end) 的歌名候选（后台任务）。"""
-    video = payload.get("video", "")
-    try:
-        start = float(payload["start"])
-        end = float(payload["end"])
-    except (KeyError, TypeError, ValueError):
-        raise HTTPException(400, "start/end 必须是秒数")
-    if not video or not Path(video).is_file():
-        raise HTTPException(400, "视频路径无效")
-    if not 0 <= start < end:
-        raise HTTPException(400, "时间段非法")
+    video = _require_video(payload.get("video"))
+    start, end = _segment_payload(payload, video)
     task_id = _new_task()
     log = _task_progress(task_id)
     lang = payload.get("lang", "auto")
@@ -369,7 +434,7 @@ def api_recognize(payload: dict):
     def run():
         log(f"正在识别 {payload.get('name', '')} ({format_time(start)} ~ {format_time(end)})...")
         return recognize_segment(video, start, end, lang=lang,
-                                 work_dir=str(sess["temp"]))
+                                 work_dir=str(sess["temp"]), progress_cb=log)
 
     _run_task(task_id, run)
     return {"task_id": task_id}
@@ -378,20 +443,17 @@ def api_recognize(payload: dict):
 @app.post("/api/transcribe")
 def api_transcribe(payload: dict):
     """仅转写候选段，供用户复制歌词自行搜索。"""
-    video = payload.get("video", "")
-    try:
-        start, end = float(payload["start"]), float(payload["end"])
-    except (KeyError, TypeError, ValueError):
-        raise HTTPException(400, "start/end 必须是秒数")
-    if not video or not Path(video).is_file() or not 0 <= start < end:
-        raise HTTPException(400, "视频路径或时间段无效")
+    video = _require_video(payload.get("video"))
+    start, end = _segment_payload(payload, video)
     task_id = _new_task()
     log = _task_progress(task_id)
     sess = _session_paths(video)
+    lang = payload.get("lang", "auto")
 
     def run():
         log(f"正在转写 {format_time(start)} ~ {format_time(end)}...")
-        texts = transcribe_segment(video, start, end, work_dir=str(sess["temp"]))
+        texts = transcribe_segment(video, start, end, lang=lang,
+                                   work_dir=str(sess["temp"]), progress_cb=log)
         return {"transcript": "\n\n".join(texts), "window_count": len(texts)}
 
     _run_task(task_id, run)
@@ -404,14 +466,16 @@ def api_recognize_all(payload: dict):
 
     一次任务跑完所有段，避免每个段都触发模型加载；进度按段数推进。
     """
-    video = payload.get("video", "")
-    if not video or not Path(video).is_file():
-        raise HTTPException(400, "视频路径无效")
-    global CURRENT_VIDEO_REQ
-    CURRENT_VIDEO_REQ = str(Path(video))
-    cands = _load_candidates_payload(video)
+    video = _require_video(payload.get("video"))
+    try:
+        cands = _load_candidates_payload(video)
+    except ValueError as e:
+        raise HTTPException(400, f"候选清单格式错误: {e}")
     if not cands:
         raise HTTPException(400, "候选清单为空，请先执行分析")
+    duration = _checked_video_duration(video)
+    for c in cands:
+        _validate_segment(c["start"], c["end"], duration)
     task_id = _new_task()
     log = _task_progress(task_id)
     lang = payload.get("lang", "auto")
@@ -423,7 +487,7 @@ def api_recognize_all(payload: dict):
             log(f"[{i}/{len(cands)}] 识别 {c['start_str']} ~ {c['end_str']}...")
             start, end = c["start"], c["end"]
             res = recognize_segment(video, start, end, lang=lang,
-                                    work_dir=str(sess["temp"]))
+                                    work_dir=str(sess["temp"]), progress_cb=log)
             results.append({"index": c["index"], "start": start,
                             "start_str": c["start_str"], "end": end,
                             "end_str": c["end_str"], **res})
@@ -445,21 +509,32 @@ def _load_candidates_payload(video_arg=""):
 
 @app.post("/api/cut")
 def api_cut(payload: dict):
-    video = payload.get("video", "")
-    if not video or not Path(video).is_file():
-        raise HTTPException(400, "视频路径无效")
-    global CURRENT_VIDEO_REQ
-    CURRENT_VIDEO_REQ = str(Path(video))
+    video = _require_video(payload.get("video"))
+    pad = payload.get("pad", 1.5)
+    min_duration = payload.get("min_duration", 0.0)
+    try:
+        validate_cut_parameters(pad, min_duration)
+    except (ValueError, OverflowError) as e:
+        raise HTTPException(400, str(e))
+    if not isinstance(payload.get("overwrite", False), bool):
+        raise HTTPException(400, "overwrite 必须是布尔值")
+    if payload.get("out_dir") is not None and not isinstance(payload["out_dir"], str):
+        raise HTTPException(400, "out_dir 必须是目录路径文本")
     sess = _session_paths(video)
     if not sess["songs"].exists():
         raise HTTPException(400, "songs.txt 不存在，请先保存最终清单")
+    try:
+        songs = _load_songs(video)
+    except ValueError as e:
+        raise HTTPException(400, f"清单格式错误: {e}")
+    if not songs:
+        raise HTTPException(400, "清单为空，请先添加歌曲")
+    _song_blocks(songs, _checked_video_duration(video))
     task_id = _new_task()
     log = _task_progress(task_id)
 
     def run():
         out_dir = payload.get("out_dir") or str(sess["result"])
-        pad = payload.get("pad", 1.5)
-        min_duration = payload.get("min_duration", 0.0)
         report = do_cut(video=video, songlist_path=sess["songs"],
                         out_dir=out_dir, pad=pad, min_duration=min_duration,
                         overwrite=bool(payload.get("overwrite", False)),
@@ -483,13 +558,11 @@ def api_cut(payload: dict):
 @app.post("/api/select-video")
 def api_select_video(payload: dict):
     """前端切换/选定视频时调用，设定当前会话（可立即建 temp/result 目录）。"""
-    video = payload.get("video", "")
-    if not video or not Path(video).is_file():
-        raise HTTPException(400, "视频路径无效")
+    video = _require_video(payload.get("video"))
     global CURRENT_VIDEO_REQ
     CURRENT_VIDEO_REQ = str(Path(video))
     sess = _session_paths(video)
-    return {"dir": str(_session_dir(video)),
+    return {"video": video, "dir": str(_session_dir(video)),
             "temp": str(sess["temp"]), "result": str(sess["result"])}
 
 

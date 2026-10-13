@@ -12,6 +12,8 @@
 """
 
 import hashlib
+import itertools
+import math
 import shutil
 import subprocess
 import threading
@@ -146,6 +148,24 @@ def singing_probs(wav_path, model_dir, use_gpu, progress_cb=None):
     return probs, result["dur"]
 
 
+def validate_detection_parameters(min_duration, win_sec, win_thresh, merge_gap,
+                                  win_frac_min, hop_sec=WIN_HOP_SEC):
+    limits = {
+        "min_duration": (min_duration, 0, None),
+        "win_sec": (win_sec, 0.01, None),
+        "hop_sec": (hop_sec, 0.01, None),
+        "win_thresh": (win_thresh, 0, 1),
+        "merge_gap": (merge_gap, 0, None),
+        "win_frac_min": (win_frac_min, 0, 1),
+    }
+    for name, (value, minimum, maximum) in limits.items():
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or \
+                not math.isfinite(value) or value < minimum or \
+                (maximum is not None and value > maximum):
+            bound = f"{minimum}~{maximum}" if maximum is not None else f">= {minimum}"
+            raise ValueError(f"{name} 必须是 {bound} 的有限数值")
+
+
 def window_candidates(singing_p, speech_p=None, music_p=None,
                       win_sec=WIN_SEC, hop_sec=WIN_HOP_SEC, thresh=WIN_THRESH,
                       win_frac_min=WIN_FRAC_MIN, merge_gap=MERGE_GAP,
@@ -159,14 +179,22 @@ def window_candidates(singing_p, speech_p=None, music_p=None,
     music。实测（2 小时录播 + 13 首真值视频）要求"唱赢"帧占比不低于 0.08，
     可在不损失召回的前提下剔除大部分误报。传 0 关闭该判别项。
     """
+    validate_detection_parameters(min_duration, win_sec, thresh, merge_gap,
+                                  win_frac_min, hop_sec)
     frame_hop = 0.01
     n = len(singing_p)
-    win_f = int(win_sec / frame_hop)
+    if not n:
+        return []
+    win_f = min(n, int(win_sec / frame_hop))
     hop_f = max(1, int(hop_sec / frame_hop))
     use_frac = win_frac_min > 0 and speech_p is not None and music_p is not None
 
     clusters = []  # [start_sec, end_sec, [窗得分]]
-    for start in range(0, n - win_f + 1, hop_f):
+    last_start = n - win_f
+    # 短输入使用实际长度；末尾补一个右对齐完整窗口，避免漏掉不足一个步长的尾部。
+    starts = itertools.chain(range(0, last_start + 1, hop_f),
+                             [last_start] if last_start % hop_f else [])
+    for start in starts:
         sl = slice(start, start + win_f)
         w_singing = singing_p[sl]
         score = float(w_singing.mean())
@@ -178,11 +206,12 @@ def window_candidates(singing_p, speech_p=None, music_p=None,
             if win_frac < win_frac_min:
                 continue
         t = start * frame_hop
+        end = (start + win_f) * frame_hop
         if clusters and t - clusters[-1][1] <= merge_gap:
-            clusters[-1][1] = t + win_sec
+            clusters[-1][1] = end
             clusters[-1][2].append(score)
         else:
-            clusters.append([t, t + win_sec, [score]])
+            clusters.append([t, end, [score]])
 
     candidates = []
     for t0, t1, scores in clusters:
@@ -218,6 +247,9 @@ def detect(video, work_dir="work", candidates_path="candidates.txt",
         if progress_cb:
             progress_cb(msg)
 
+    validate_detection_parameters(min_duration, win_sec, win_thresh, merge_gap, win_frac_min)
+    if device not in ("cpu", "cuda"):
+        raise ValueError("device 必须是 cpu 或 cuda")
     work_dir = Path(work_dir)
     work_dir.mkdir(parents=True, exist_ok=True)
     video = Path(video)
